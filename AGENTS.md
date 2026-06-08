@@ -55,7 +55,9 @@ Dependency direction is strictly downward and must never invert:
   dependency tree builds on nightly. (Was "Rust 1.92 stable" — that predated
   the HAL dependency and is no longer correct.)
 - target `thumbv7em-none-eabihf` (installed for the pinned nightly).
-- `svd2rust` **0.31.5** (pinned — newer versions change the PAC API shape)
+- `svd2rust` **0.37.1** (pinned — its 0.32+ default ident theme produces the
+  n32g4-family API shape `Sclksw`/`SclkswR`/`Rcc` the HAL targets; 0.31.x's
+  legacy `SCLKSW_A`/`RCC` shape does not resolve against the HAL)
 - `form` 0.13.0, `svdtools` 0.1.27 (CLI is `svd`, not `svdtools`)
 - `probe-rs` NOT yet installed (needed to flash; SWD header J5 is broken out)
 - zsh autocorrect bites unknown commands: `unsetopt correct correct_all` in
@@ -131,7 +133,7 @@ exclusive PAC device features can't co-compile). Board deltas live ONLY in
 - Architecture fully decided (this file + docs/).
 - **PAC (`n32l4-pac`): DONE.** Both N32L403 and N32L406 build for
   thumbv7em-none-eabihf. Three-stage pipeline: prepass -> svdtools patch
-  (strip register prefixes, add field enums) -> svd2rust 0.31.5 -> form. The
+  (strip register prefixes, add field enums) -> svd2rust 0.37.1 -> form. The
   svdtools Stage 2 makes the PAC present the n32g4 dialect so the HAL stays
   upstream-shaped. See `n32l4-pac/README.md`.
 - **HAL (`n32l4xx-hal`): IN PROGRESS.** Forked from n32g4xx-hal, retargeted

@@ -14,7 +14,15 @@ session should treat DECIDED items as settled unless a new constraint appears.
 - **PAC: dual-device single crate** (`n32l403` + `n32l406` features), mirroring
   the n32g4 family layout. Build from vendor SVDs (they exist! in the Keil
   N32L40x_DFP) via idempotent Python prepass -> svdtools -> svd2rust -> form.
-- **svd2rust pinned to 0.31.5** to match the n32g4 family API shape.
+- **svd2rust pinned to 0.37.1.** The n32g4-family API shape the HAL targets
+  (`Sclksw`/`SclkswR`/`CfgSpec`, PascalCase peripherals like `Rcc`) is the
+  svd2rust 0.32+ default theme. svd2rust <=0.31 emits the legacy shape
+  (`SCLKSW_A`/`SCLKSW_R`/`CFG_SPEC`, CONSTANT_CASE `RCC`), which the HAL does
+  NOT resolve against. CORRECTS the earlier "pinned to 0.31.5 to match the
+  n32g4 shape" note: 0.31.5 does the opposite -- it was the root cause of the
+  bulk of the HAL name-resolution errors. 0.37.1 also gives PascalCase
+  peripheral names, so the planned separate `RCC`->`Rcc` casing patch is
+  unnecessary.
 - **Prepass idempotency by defect-pattern, not markers.** Absence of the defect
   IS the applied state; re-runs are byte-identical no-ops. Vendor SVD never
   mutated; corrected copy written to build/.
