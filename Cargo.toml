@@ -1,0 +1,42 @@
+[package]
+name = "servo4257-rs"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CANopen CiA 402 (csp/ip) firmware for MKS SERVO42D/57D stepper drivers"
+
+# PAC + HAL come from the separate infra repo; wire as path/git deps once it
+# exists. Left commented so the repo is honest about not-yet-buildable status.
+[dependencies]
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.3"
+critical-section = "1.1.2"
+# embassy-executor = { version = "*", features = ["arch-cortex-m", "executor-thread"] }
+# embassy-time = "*"
+# n32l4 = { path = "../n32l4-pac" }
+# n32l4xx-hal = { path = "../n32l4xx-hal" }
+
+[features]
+# Exactly one board feature per build; mutually exclusive -> separate cargo
+# invocations per board.
+default = []
+board-42d = []
+board-57d = []
+
+[[bin]]
+name = "servo42d"
+required-features = ["board-42d"]
+
+[[bin]]
+name = "servo57d"
+required-features = ["board-57d"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+debug = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = "s"
+lto = false
