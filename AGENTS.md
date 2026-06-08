@@ -46,11 +46,17 @@ repo (the "infra repo") and is depended on, never edited from here:
 Dependency direction is strictly downward and must never invert:
 `bin -> lib -> {hot, canopen} -> boundary -> motion -> hal -> pac`
 
-## Toolchain (installed & version-pinned to match the n32g4 family)
+## Toolchain (version-pinned across the workspace)
 
+- **Rust: `nightly-2026-06-07`**, pinned via `rust-toolchain.toml` in this
+  repo AND in `n32l4-pac`. REQUIRED: the HAL (n32l4xx-hal, forked from
+  n32g4xx-hal) uses 8 unstable features (`adt_const_params`,
+  `min_specialization`, `impl_trait_in_assoc_type`, etc.), so the whole
+  dependency tree builds on nightly. (Was "Rust 1.92 stable" — that predated
+  the HAL dependency and is no longer correct.)
+- target `thumbv7em-none-eabihf` (installed for the pinned nightly).
 - `svd2rust` **0.31.5** (pinned — newer versions change the PAC API shape)
 - `form` 0.13.0, `svdtools` 0.1.27 (CLI is `svd`, not `svdtools`)
-- Rust 1.92, target `thumbv7em-none-eabihf` (installed)
 - `probe-rs` NOT yet installed (needed to flash; SWD header J5 is broken out)
 - zsh autocorrect bites unknown commands: `unsetopt correct correct_all` in
   fresh shells before installs.
@@ -105,13 +111,17 @@ exclusive PAC device features can't co-compile). Board deltas live ONLY in
 
 ## Where to start (suggested order, lowest-risk first)
 
-1. Finish the PAC in the infra repo: run N32L403 through the same pipeline
-   (prepass -> svd2rust -> form -> build) that already works for N32L406; add
-   any new prepass rules it surfaces; assemble the dual-device crate mirroring
-   the n32g4 template (per-device modules, build.rs/device.x, features).
-2. Fork + retarget the HAL.
+1. ~~Finish the PAC in the infra repo.~~ DONE — both devices build; see
+   `n32l4-pac/README.md`. Pipeline is now prepass -> svd patch (svdtools) ->
+   svd2rust -> form.
+2. **Fork + retarget the HAL — IN PROGRESS.** Fork created and building
+   against the PAC; peripheral modules being ported module-by-module. See
+   `n32l4xx-hal/PORT_STATUS.md` for the live state and plan. This is the
+   current critical path: the firmware can't drop its commented-out PAC/HAL
+   deps until the HAL compiles.
 3. Fill `src/motion/` FIRST — it's pure math, host-testable, no hardware. Get
    FOC/encoder/interpolation correct in unit tests before touching silicon.
+   (Can proceed in parallel with the HAL port — no hardware deps.)
 4. Then `boundary/`, then `hot/` ISRs (current first, cascade second), then
    `canopen/` async last.
 5. Install probe-rs; bring up on hardware via SWD (J5).
@@ -119,7 +129,17 @@ exclusive PAC device features can't co-compile). Board deltas live ONLY in
 ## Status at handoff
 
 - Architecture fully decided (this file + docs/).
-- PAC pipeline PROVEN end-to-end for N32L406: vendor SVD -> idempotent
-  Python prepass (1 rule, 6 sites: bad access enums) -> svd2rust ->
-  form (73 modules) -> `cargo build --target thumbv7em-none-eabihf` COMPILES.
-- This repo is scaffolding only — module stubs, no real logic yet.
+- **PAC (`n32l4-pac`): DONE.** Both N32L403 and N32L406 build for
+  thumbv7em-none-eabihf. Three-stage pipeline: prepass -> svdtools patch
+  (strip register prefixes, add field enums) -> svd2rust 0.31.5 -> form. The
+  svdtools Stage 2 makes the PAC present the n32g4 dialect so the HAL stays
+  upstream-shaped. See `n32l4-pac/README.md`.
+- **HAL (`n32l4xx-hal`): IN PROGRESS.** Forked from n32g4xx-hal, retargeted
+  onto the PAC, toolchain pinned. Builds attempted; ~717 errors characterized
+  and a module-by-module port plan is underway (rcc first). The recurring
+  issue — the HAL expects an enum-enriched PAC — is being solved by enriching
+  the SVD (Stage 2), not by diverging the HAL. See `n32l4xx-hal/PORT_STATUS.md`.
+- **Toolchain: nightly-2026-06-07**, pinned in this repo and the PAC.
+- This firmware repo itself is still scaffolding only — module stubs, no real
+  logic yet. `src/motion/` (pure math) can be started in parallel with the HAL
+  port since it has no hardware/PAC deps.

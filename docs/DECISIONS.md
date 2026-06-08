@@ -18,6 +18,27 @@ session should treat DECIDED items as settled unless a new constraint appears.
 - **Prepass idempotency by defect-pattern, not markers.** Absence of the defect
   IS the applied state; re-runs are byte-identical no-ops. Vendor SVD never
   mutated; corrected copy written to build/.
+- **svdtools Stage 2 normalization (the pipeline is prepass -> svd patch ->
+  svd2rust -> form).** The raw NSING SVD names registers with a peripheral
+  prefix (`RCC_CFG`) and carries no field `<enumeratedValues>`. The n32g4
+  family PAC (which the HAL targets) has neither defect. Stage 2 strips the
+  per-peripheral register prefixes and adds the field enums, so the PAC
+  presents the n32g4 dialect and the HAL stays close to upstream. COMP is NOT
+  prefix-stripped (mixed COMP_/COMP1_/COMP2_ would collide; firmware doesn't
+  use COMP).
+- **Enum enrichment lives at the PAC layer, not the HAL (Path A, Option 1).**
+  The n32g4 HAL matches on field enums (`Sclksw::Pll`, `Ahbpres::Div2`); our
+  raw SVD emits bare bit accessors. We add the enums via svdtools Stage 2
+  rather than rewriting HAL register access to raw bits. Keeps every HAL
+  module upstream-shaped. Recurs across modules (rcc, timer, spi, can) — same
+  treatment each time. De-risked: N32L4 and N32G4 share the clock-register
+  layout; enum values are sourced from the n32g4 PAC and cross-checked against
+  the vendor SDK headers (`n32l40-sdk/.../inc/`), never invented.
+- **Toolchain: nightly, pinned to a fixed date** (`nightly-2026-06-07`) via
+  `rust-toolchain.toml` in both the firmware repo and the PAC. REQUIRED: the
+  HAL uses 8 unstable features (adt_const_params, min_specialization,
+  impl_trait_in_assoc_type, ...). All 8 verified present on the pinned nightly.
+  Supersedes the earlier "Rust 1.92 stable" note (which predated the HAL dep).
 - **HAL: fork guineawheek/n32g4xx-hal** (0BSD, blocking embedded-hal HAL), not
   build a fresh async HAL.
 - **embassy for the async tier only** (CANopen/CiA402/PDO), via embassy-executor
@@ -48,8 +69,9 @@ session should treat DECIDED items as settled unless a new constraint appears.
 - **Exact NVIC priority numbers** and confirming no dep (embassy/HAL/
   critical-section) masks interrupts beyond the current-loop slack. REQUIRED
   audit before trusting the two-tier guarantee.
-- **Whether N32L403 needs additional prepass rules** beyond the 406's access
-  fix (unknown until run through the pipeline).
+- ~~Whether N32L403 needs additional prepass rules~~ RESOLVED: no. N32L403 has
+  the identical 6-site bad-`<access>`-enum signature as the 406; the same
+  single prepass rule covers both. Both devices build.
 - **PAC upstreaming**: the n32g4 PAC's SOURCE repo is not public (only the
   generated crate). So an upstream target for n32l4 may not exist; likely
   publish our own family-consistent crate rather than PR.
