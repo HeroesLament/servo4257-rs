@@ -5,9 +5,11 @@ stepper drivers, adding **CANopen CiA 402 Interpolated Position (ip) and Cyclic
 Synchronous Position (csp)** with feed-forwards and PDO feedback -- a capability
 effectively absent from the open-source space.
 
-**Status:** architecture decided, repo scaffolded (stubs only). Not yet
-buildable -- depends on the `n32l4` PAC and `n32l4xx-hal` from the infra repo,
-which are in progress.
+**Status:** architecture decided; firmware repo scaffolded (stubs only), not
+yet buildable. The dependency layers are DONE: the `n32l4` PAC and
+`n32l4xx-hal` both build clean on N32L403 + N32L406. Next step is firmware
+bring-up against them (re-enable the deps, write the `Board` impl + hot path).
+See `docs/HAL_INTERFACE.md` for the firmware<->HAL contract.
 
 ## Start here
 
@@ -15,6 +17,7 @@ which are in progress.
 - `docs/ARCHITECTURE.md` -- full derivation of the control architecture.
 - `docs/DECISIONS.md` -- what's decided / open / rejected.
 - `docs/HARDWARE.md` -- verified board + MCU reference.
+- `docs/HAL_INTERFACE.md` -- canonical firmware<->HAL/PAC interface contract.
 
 ## Layout
 

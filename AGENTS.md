@@ -46,6 +46,11 @@ repo (the "infra repo") and is depended on, never edited from here:
 Dependency direction is strictly downward and must never invert:
 `bin -> lib -> {hot, canopen} -> boundary -> motion -> hal -> pac`
 
+> **Canonical HAL/PAC interface contract: `docs/HAL_INTERFACE.md`.**
+> Refer to it for any HAL or PAC interaction -- call shape, register field,
+> ISR usage rule, peripheral instance model, or which inherited values are
+> verified vs. must-verify-on-contact. Update it when the contract changes.
+
 ## Toolchain (version-pinned across the workspace)
 
 - **Rust: `nightly-2026-06-07`**, pinned via `rust-toolchain.toml` in this
@@ -116,11 +121,13 @@ exclusive PAC device features can't co-compile). Board deltas live ONLY in
 1. ~~Finish the PAC in the infra repo.~~ DONE — both devices build; see
    `n32l4-pac/README.md`. Pipeline is now prepass -> svd patch (svdtools) ->
    svd2rust -> form.
-2. **Fork + retarget the HAL — IN PROGRESS.** Fork created and building
-   against the PAC; peripheral modules being ported module-by-module. See
-   `n32l4xx-hal/PORT_STATUS.md` for the live state and plan. This is the
-   current critical path: the firmware can't drop its commented-out PAC/HAL
-   deps until the HAL compiles.
+2. **Fork + retarget the HAL — DONE.** All drivers build clean (0 errors,
+   0 clippy) on both N32L403 and N32L406. See `n32l4xx-hal/PORT_STATUS.md` for
+   per-driver notes and `docs/HAL_INTERFACE.md` for the firmware<->HAL contract.
+   The critical path has moved to firmware bring-up: re-enable the (currently
+   commented-out) PAC/HAL deps in Cargo.toml and write the `Board` impl + hot
+   path against the HAL. Expect to verify inherited values on contact, not
+   reconcile API drift (there are no call sites yet).
 3. Fill `src/motion/` FIRST — it's pure math, host-testable, no hardware. Get
    FOC/encoder/interpolation correct in unit tests before touching silicon.
    (Can proceed in parallel with the HAL port — no hardware deps.)
@@ -136,11 +143,13 @@ exclusive PAC device features can't co-compile). Board deltas live ONLY in
   (strip register prefixes, add field enums) -> svd2rust 0.37.1 -> form. The
   svdtools Stage 2 makes the PAC present the n32g4 dialect so the HAL stays
   upstream-shaped. See `n32l4-pac/README.md`.
-- **HAL (`n32l4xx-hal`): IN PROGRESS.** Forked from n32g4xx-hal, retargeted
-  onto the PAC, toolchain pinned. Builds attempted; ~717 errors characterized
-  and a module-by-module port plan is underway (rcc first). The recurring
-  issue — the HAL expects an enum-enriched PAC — is being solved by enriching
-  the SVD (Stage 2), not by diverging the HAL. See `n32l4xx-hal/PORT_STATUS.md`.
+- **HAL (`n32l4xx-hal`): DONE.** Forked from n32g4xx-hal, retargeted onto the
+  PAC. All drivers (gpio, spi, can, serial, adc, pwm, i2c, fmc, dma) build
+  clean — 0 errors, 0 clippy — on both N32L403 and N32L406. The recurring
+  issue (the HAL expects an enum-enriched PAC) was solved by enriching the SVD
+  (Stage 2), not by diverging the HAL; five vendor-SVD bugs and several
+  silently-wrong inherited maps were fixed against the UM/Datasheet along the
+  way. See `n32l4xx-hal/PORT_STATUS.md` and `docs/HAL_INTERFACE.md`.
 - **Toolchain: nightly-2026-06-07**, pinned in this repo and the PAC.
 - This firmware repo itself is still scaffolding only — module stubs, no real
   logic yet. `src/motion/` (pure math) can be started in parallel with the HAL

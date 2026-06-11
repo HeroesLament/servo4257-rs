@@ -39,9 +39,15 @@ session should treat DECIDED items as settled unless a new constraint appears.
   raw SVD emits bare bit accessors. We add the enums via svdtools Stage 2
   rather than rewriting HAL register access to raw bits. Keeps every HAL
   module upstream-shaped. Recurs across modules (rcc, timer, spi, can) — same
-  treatment each time. De-risked: N32L4 and N32G4 share the clock-register
-  layout; enum values are sourced from the n32g4 PAC and cross-checked against
-  the vendor SDK headers (`n32l40-sdk/.../inc/`), never invented.
+  treatment each time. CORRECTS the earlier provenance rule:
+  enum values are NOT to be trusted from the n32g4 PAC / vendor SDK headers.
+  Those are STARTING POINTS; the N32L40x User Manual / Datasheet is the source
+  of truth and every enriched value must be verified against it. This is not
+  hypothetical -- the ADC trigger enum (EXTRSEL/EXTJSEL) was inherited from
+  stm32f4xx-hal, matched the old "trust the upstream values" rule, and was
+  WRONG for this part (caught only by reading UM Tables 17-5/17-6). The clock
+  registers do happen to share the n32g4 layout, but that is a fact to confirm
+  per-field, not assumed. See `docs/HAL_INTERFACE.md` (provenance discipline).
 - **Toolchain: nightly, pinned to a fixed date** (`nightly-2026-06-07`) via
   `rust-toolchain.toml` in both the firmware repo and the PAC. REQUIRED: the
   HAL uses 8 unstable features (adt_const_params, min_specialization,
