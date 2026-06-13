@@ -11,17 +11,19 @@ description = "CANopen CiA 402 (csp/ip) firmware for MKS SERVO42D/57D stepper dr
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.3"
 critical-section = "1.1.2"
+panic-halt = "1.0"
 # embassy-executor = { version = "*", features = ["arch-cortex-m", "executor-thread"] }
 # embassy-time = "*"
-# n32l4 = { path = "../n32l4-pac" }
-# n32l4xx-hal = { path = "../n32l4xx-hal" }
+# embassy deferred to a later stage; link the HAL/PAC first.
+n32l4xx-hal = { path = "../n32l4xx-hal", default-features = false, features = ["rt"] }
+n32l4 = { path = "../n32l4-pac" }
 
 [features]
 # Exactly one board feature per build; mutually exclusive -> separate cargo
 # invocations per board.
 default = []
-board-42d = []
-board-57d = []
+board-42d = ["n32l4xx-hal/n32l403", "n32l4/n32l403"]
+board-57d = ["n32l4xx-hal/n32l406", "n32l4/n32l406"]
 
 [[bin]]
 name = "servo42d"
