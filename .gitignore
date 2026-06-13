@@ -4,3 +4,7 @@
 Cargo.lock
 .DS_Store
 **/.DS_Store
+
+# Large vendor reference schematics/datasheets - kept locally, not committed.
+# Provenance for the verified hw_map lives in code comments + docs/HARDWARE.md.
+*.pdf
