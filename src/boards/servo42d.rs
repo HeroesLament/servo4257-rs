@@ -30,7 +30,7 @@ impl Servo42D {
 }
 
 impl Board for Servo42D {
-    const SHUNT_OHMS: f32 = 0.05; // TODO confirm from 42D power sheet
+    const SHUNT_OHMS: f32 = 0.05; // R9 = 0.05 ohm, verified on 42D power sheet
     const MAX_CURRENT_MA: u32 = 3000; // TODO confirm from datasheet/thermal
     const NAME: &'static str = "MKS SERVO42D (N32L403)";
     const HAS_RS485: bool = false; // 32-pin package: no USART3 breakout
