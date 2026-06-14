@@ -5,9 +5,10 @@
 //! electrical constants below, and it ADDS USART3/RS485 + extra opto IO
 //! that the 48-pin package breaks out.
 //!
-//! Stage 2 (in progress): the PWM output path is wired for real against TIM3
-//! (PA6/PA7/PB0/PB1 @ AF2 = CH1..4). Current sense / encoder / enable are
-//! still todo!() pending their HAL wiring. See docs/HAL_INTERFACE.md.
+//! Stage 2 complete: all four Board methods are wired against the HAL --
+//! TIM3 4-channel PWM (apply_coil_voltages), injected ADC current sense
+//! (read_coil_currents), MT6816/SPI1 encoder (rotor_angle), and the nEN
+//! output-stage enable (set_output_enable). See docs/HAL_INTERFACE.md.
 
 use crate::board::{Board, CoilCommand, CoilCurrent, RotorAngle};
 use n32l4xx_hal::pac;
@@ -15,7 +16,7 @@ use n32l4xx_hal::prelude::*;
 use n32l4xx_hal::pwm::{Pwm, PwmExt};
 use embedded_hal_02::PwmPin;
 use n32l4xx_hal::gpio::{Alternate, Output, PushPull,
-    gpioa::{PA6, PA7}, gpiob::{PB0, PB1, PB6}};
+    gpioa::{PA6, PA7}, gpiob::{PB0, PB1, PB6, PB7}};
 use n32l4xx_hal::spi::{Spi, Mode, Phase, Polarity};
 use n32l4xx_hal::adc::{Adc, config::{AdcConfig, InjectedSequence, InjectedTrigger, SampleTime, TriggerMode}};
 use n32l4xx_hal::pwm::{C1, C2, C3, C4, ComplementaryImpossible};
@@ -27,6 +28,14 @@ const PWM_HZ: u32 = 20_000;
 /// MT6816 SPI clock. Datasheet TSCK min 64 ns => ~15 MHz ceiling; run
 /// conservative. Mode 3 (CPOL=1/IdleHigh, CPHA=1/2nd edge).
 const ENCODER_HZ: u32 = 4_000_000;
+
+/// Output-stage enable polarity on the nEN line (PB7).
+/// VERIFY: schematic -- does nEN enable the stage when driven LOW or HIGH?
+/// The `n` prefix and MKS convention suggest ACTIVE-LOW (drive low to
+/// enable), but this is UNCONFIRMED. init() commands the stage DISABLED
+/// regardless, so a wrong value here can only fail safe (stays off), never
+/// energize the bridge unexpectedly. Flip this once confirmed on the sheet.
+const EN_ACTIVE_LOW: bool = true;
 
 // The four TIM3 PWM channels on this board, in coil order.
 type Ch1 = Pwm<pac::Tim3, C1, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveHigh, n32l4xx_hal::pwm::ActiveHigh>;
@@ -45,7 +54,7 @@ pub struct Servo57D {
     adc: Adc<pac::Adc>,
     spi: Spi<pac::Spi1>,
     enc_cs: PB6<Output<PushPull>>,
-    // TODO: en (PB7) wired from hw_map.
+    en: PB7<Output<PushPull>>,
 }
 
 impl Servo57D {
@@ -111,7 +120,16 @@ impl Servo57D {
         let mode = Mode { polarity: Polarity::IdleHigh, phase: Phase::CaptureOnSecondTransition };
         let spi = dp.spi1.spi((sck, miso, mosi), mode, ENCODER_HZ.Hz(), &clocks, &mut dp.afio);
 
-        Self { a_plus, a_minus, b_plus, b_minus, max_duty, adc, spi, enc_cs }
+        // ---- Output-stage enable (nEN = PB7, see hw_map::gpio) ----
+        // Come up in the INACTIVE (disabled) state regardless of polarity.
+        let en = gpiob.pb7.into_push_pull_output();
+
+        let mut board = Self {
+            a_plus, a_minus, b_plus, b_minus, max_duty, adc, spi, enc_cs, en,
+        };
+        // Fail-safe: explicitly command the output stage OFF at boot.
+        board.set_output_enable(false);
+        board
     }
 
     /// Map a signed coil command to a (plus, minus) duty pair using
@@ -172,7 +190,14 @@ impl Board for Servo57D {
         angle14 << 2
     }
 
-    fn set_output_enable(&mut self, _enabled: bool) {
-        todo!("drive nEN (hw_map::gpio); active level TBD from EG3013 EN")
+    fn set_output_enable(&mut self, enabled: bool) {
+        // Drive nEN to its active level when enabling. Polarity is isolated in
+        // EN_ACTIVE_LOW (see its doc -- still to be confirmed on the schematic).
+        let drive_high = enabled ^ EN_ACTIVE_LOW;
+        if drive_high {
+            let _ = self.en.set_high();
+        } else {
+            let _ = self.en.set_low();
+        }
     }
 }
