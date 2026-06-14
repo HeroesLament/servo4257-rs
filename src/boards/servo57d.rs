@@ -15,6 +15,7 @@ use n32l4xx_hal::prelude::*;
 use n32l4xx_hal::pwm::{Pwm, PwmExt};
 use embedded_hal_02::PwmPin;
 use n32l4xx_hal::gpio::{Alternate, gpioa::{PA6, PA7}, gpiob::{PB0, PB1}};
+use n32l4xx_hal::adc::{Adc, config::{AdcConfig, InjectedSequence, InjectedTrigger, SampleTime, TriggerMode}};
 use n32l4xx_hal::pwm::{C1, C2, C3, C4, ComplementaryImpossible};
 
 /// PWM carrier frequency for the H-bridges. TODO: confirm against the current
@@ -35,7 +36,8 @@ pub struct Servo57D {
     b_plus: Ch3,
     b_minus: Ch4,
     max_duty: u16,
-    // TODO: adc_currents, encoder (SPI1+MT6816), en (PB7) wired from hw_map.
+    adc: Adc<pac::Adc>,
+    // TODO: encoder (SPI1+MT6816), en (PB7) wired from hw_map.
 }
 
 impl Servo57D {
@@ -70,7 +72,26 @@ impl Servo57D {
         b_plus.enable();
         b_minus.enable();
 
-        Self { a_plus, a_minus, b_plus, b_minus, max_duty }
+        // ---- Current-sense ADC (injected group, TIM3-triggered) ----
+        // currentA = PA2 = ch3, currentB = PA1 = ch2 (see hw_map::adc).
+        let cur_a = gpioa.pa2.into_analog();
+        let cur_b = gpioa.pa1.into_analog();
+
+        let mut adc = Adc::adc(dp.adc, true, AdcConfig::default());
+        adc.calibrate();
+        // Injected sequence: slot One = coil A (PA2), slot Two = coil B (PA1).
+        adc.configure_injected_channel(&cur_a, InjectedSequence::One, SampleTime::Cycles_7p5);
+        adc.configure_injected_channel(&cur_b, InjectedSequence::Two, SampleTime::Cycles_7p5);
+        // Trigger the injected group off the bridge timer.
+        // TODO(hot-loop): Tim3Cc4 shares CH4 with the phaseB2 PWM output --
+        // sample timing is coupled to that compare value. Revisit when the
+        // current-loop ISR is built (reserve a CC channel for triggering, or
+        // confirm the sample point is acceptable). EXTJSEL has no TIM3_TRGO
+        // option on this part (UM Table 17-6), so CC4 is the only TIM3 source.
+        adc.set_injected_channel_external_trigger((TriggerMode::RisingEdge, InjectedTrigger::Tim3cc4));
+        adc.enable();
+
+        Self { a_plus, a_minus, b_plus, b_minus, max_duty, adc }
     }
 
     /// Map a signed coil command to a (plus, minus) duty pair using
@@ -104,7 +125,11 @@ impl Board for Servo57D {
     }
 
     fn read_coil_currents(&self) -> (CoilCurrent, CoilCurrent) {
-        todo!("read latched injected ADC samples (hw_map::adc)")
+        // Latched injected results; does NOT spin-wait (ISR-safe per
+        // docs/HAL_INTERFACE.md). Slot One = coil A, slot Two = coil B.
+        let i_a = self.adc.injected_sample(InjectedSequence::One);
+        let i_b = self.adc.injected_sample(InjectedSequence::Two);
+        (i_a, i_b)
     }
 
     fn rotor_angle(&mut self) -> RotorAngle {
