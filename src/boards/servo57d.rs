@@ -14,13 +14,19 @@ use n32l4xx_hal::pac;
 use n32l4xx_hal::prelude::*;
 use n32l4xx_hal::pwm::{Pwm, PwmExt};
 use embedded_hal_02::PwmPin;
-use n32l4xx_hal::gpio::{Alternate, gpioa::{PA6, PA7}, gpiob::{PB0, PB1}};
+use n32l4xx_hal::gpio::{Alternate, Output, PushPull,
+    gpioa::{PA6, PA7}, gpiob::{PB0, PB1, PB6}};
+use n32l4xx_hal::spi::{Spi, Mode, Phase, Polarity};
 use n32l4xx_hal::adc::{Adc, config::{AdcConfig, InjectedSequence, InjectedTrigger, SampleTime, TriggerMode}};
 use n32l4xx_hal::pwm::{C1, C2, C3, C4, ComplementaryImpossible};
 
 /// PWM carrier frequency for the H-bridges. TODO: confirm against the current
 /// loop rate; 20 kHz is the design target (above audible, fits the budget).
 const PWM_HZ: u32 = 20_000;
+
+/// MT6816 SPI clock. Datasheet TSCK min 64 ns => ~15 MHz ceiling; run
+/// conservative. Mode 3 (CPOL=1/IdleHigh, CPHA=1/2nd edge).
+const ENCODER_HZ: u32 = 4_000_000;
 
 // The four TIM3 PWM channels on this board, in coil order.
 type Ch1 = Pwm<pac::Tim3, C1, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveHigh, n32l4xx_hal::pwm::ActiveHigh>;
@@ -37,13 +43,15 @@ pub struct Servo57D {
     b_minus: Ch4,
     max_duty: u16,
     adc: Adc<pac::Adc>,
-    // TODO: encoder (SPI1+MT6816), en (PB7) wired from hw_map.
+    spi: Spi<pac::Spi1>,
+    enc_cs: PB6<Output<PushPull>>,
+    // TODO: en (PB7) wired from hw_map.
 }
 
 impl Servo57D {
     /// Construct and configure board peripherals from the raw device.
     /// Stage 2: clocks + TIM3 PWM only; other peripherals added incrementally.
-    pub fn init(dp: pac::Peripherals) -> Self {
+    pub fn init(mut dp: pac::Peripherals) -> Self {
         let rcc = dp.rcc.constrain();
         let clocks = rcc.cfgr.freeze();
 
@@ -91,7 +99,19 @@ impl Servo57D {
         adc.set_injected_channel_external_trigger((TriggerMode::RisingEdge, InjectedTrigger::Tim3cc4));
         adc.enable();
 
-        Self { a_plus, a_minus, b_plus, b_minus, max_duty, adc }
+        // ---- Encoder: MT6816 on SPI1 (see hw_map::encoder) ----
+        // PB3=SCK, PB4=MISO, PB5=MOSI @ AF; CS=PB6 driven as GPIO (the MT6816
+        // frames each transfer with CSN, so we toggle it manually).
+        let sck = gpiob.pb3.into_alternate::<1>();
+        let miso = gpiob.pb4.into_alternate::<1>();
+        let mosi = gpiob.pb5.into_alternate::<0>();
+        let mut enc_cs = gpiob.pb6.into_push_pull_output();
+        let _ = enc_cs.set_high(); // idle high (CSN inactive)
+        // MT6816 = SPI mode 3.
+        let mode = Mode { polarity: Polarity::IdleHigh, phase: Phase::CaptureOnSecondTransition };
+        let spi = dp.spi1.spi((sck, miso, mosi), mode, ENCODER_HZ.Hz(), &clocks, &mut dp.afio);
+
+        Self { a_plus, a_minus, b_plus, b_minus, max_duty, adc, spi, enc_cs }
     }
 
     /// Map a signed coil command to a (plus, minus) duty pair using
@@ -133,7 +153,23 @@ impl Board for Servo57D {
     }
 
     fn rotor_angle(&mut self) -> RotorAngle {
-        todo!("MT6816 read over SPI1 (hw_map::encoder)")
+        // MT6816 angle read (datasheet 7.6.5): 16-bit frame returns
+        //   [Angle<13:6>][Angle<5:0> No_Mag PC]
+        // i.e. word = (angle14 << 2) | (no_mag << 1) | parity.
+        // NOTE(hot-loop): this is a BLOCKING SPI transfer (~tens of SCK at
+        // 4 MHz). Per docs/HAL_INTERFACE.md it must NOT be called inline from
+        // the current-loop ISR -- pipeline it (kick off / read next tick).
+        // TODO: verify even-parity (bit0) and No_Mag_Warning (bit1) and
+        // reject/flag bad reads; the read command byte may need adjusting to
+        // the consolidated angle-read opcode once confirmed on hardware.
+        let mut buf = [0u8, 0u8];
+        let _ = self.enc_cs.set_low();
+        let _ = self.spi.transfer_in_place(&mut buf);
+        let _ = self.enc_cs.set_high();
+        let word = ((buf[0] as u16) << 8) | (buf[1] as u16);
+        let angle14 = word >> 2; // drop No_Mag + parity
+        // Map 14-bit (0..16384) to full-circle u16 (0..=65535): << 2.
+        angle14 << 2
     }
 
     fn set_output_enable(&mut self, _enabled: bool) {
