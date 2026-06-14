@@ -12,6 +12,7 @@ cortex-m = "0.7.7"
 cortex-m-rt = "0.7.3"
 critical-section = "1.1.2"
 panic-halt = "1.0"
+embedded-hal-02 = { package = "embedded-hal", version = "0.2.7" }
 # embassy-executor = { version = "*", features = ["arch-cortex-m", "executor-thread"] }
 # embassy-time = "*"
 # embassy deferred to a later stage; link the HAL/PAC first.

@@ -1,31 +1,90 @@
 //! MKS SERVO57D board implementor.
 //!
 //! MCU: N32L406CBL7 (48-pin). Shares the entire motor-drive/encoder/CAN pin
-//! map with the 42D (see super::hw_map); differs only in MCU/package, the
-//! electrical constants below, and it ADDS USART3/RS485 + extra opto IO that
-//! the 48-pin package breaks out.
+//! map with the 57D (see super::hw_map); differs only in MCU/package, the
+//! electrical constants below, and it ADDS USART3/RS485 + extra opto IO
+//! that the 48-pin package breaks out.
 //!
-//! NOTE: peripheral handles are not yet owned here. The HAL/PAC path deps in
-//! Cargo.toml are still commented out. This implementor currently provides the
-//! static characteristics and the method shape; the method bodies are todo!()
-//! until the HAL deps go live and init() wires the real peripherals via
-//! hw_map. See docs/HAL_INTERFACE.md.
+//! Stage 2 (in progress): the PWM output path is wired for real against TIM3
+//! (PA6/PA7/PB0/PB1 @ AF2 = CH1..4). Current sense / encoder / enable are
+//! still todo!() pending their HAL wiring. See docs/HAL_INTERFACE.md.
 
 use crate::board::{Board, CoilCommand, CoilCurrent, RotorAngle};
+use n32l4xx_hal::pac;
+use n32l4xx_hal::prelude::*;
+use n32l4xx_hal::pwm::{Pwm, PwmExt};
+use embedded_hal_02::PwmPin;
+use n32l4xx_hal::gpio::{Alternate, gpioa::{PA6, PA7}, gpiob::{PB0, PB1}};
+use n32l4xx_hal::pwm::{C1, C2, C3, C4, ComplementaryImpossible};
 
-/// SERVO57D board handle. Will own its configured peripherals once the HAL
-/// deps are enabled.
+/// PWM carrier frequency for the H-bridges. TODO: confirm against the current
+/// loop rate; 20 kHz is the design target (above audible, fits the budget).
+const PWM_HZ: u32 = 20_000;
+
+// The four TIM3 PWM channels on this board, in coil order.
+type Ch1 = Pwm<pac::Tim3, C1, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveHigh, n32l4xx_hal::pwm::ActiveHigh>;
+type Ch2 = Pwm<pac::Tim3, C2, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveHigh, n32l4xx_hal::pwm::ActiveHigh>;
+type Ch3 = Pwm<pac::Tim3, C3, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveHigh, n32l4xx_hal::pwm::ActiveHigh>;
+type Ch4 = Pwm<pac::Tim3, C4, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveHigh, n32l4xx_hal::pwm::ActiveHigh>;
+
+/// SERVO57D board handle. Owns the configured peripherals.
 pub struct Servo57D {
-    // TODO: pwm, adc_currents, encoder, en handles wired from super::hw_map.
-    _private: (),
+    // Coil A = (a_plus CH1, a_minus CH2); Coil B = (b_plus CH3, b_minus CH4).
+    a_plus: Ch1,
+    a_minus: Ch2,
+    b_plus: Ch3,
+    b_minus: Ch4,
+    max_duty: u16,
+    // TODO: adc_currents, encoder (SPI1+MT6816), en (PB7) wired from hw_map.
 }
 
 impl Servo57D {
-    /// Construct and configure all board peripherals from the raw device.
-    /// TODO: take the PAC Peripherals, configure TIM3 PWM / injected ADC /
-    /// SPI1 encoder / nEN per super::hw_map, return the ready handle.
-    pub fn init() -> Self {
-        Self { _private: () }
+    /// Construct and configure board peripherals from the raw device.
+    /// Stage 2: clocks + TIM3 PWM only; other peripherals added incrementally.
+    pub fn init(dp: pac::Peripherals) -> Self {
+        let rcc = dp.rcc.constrain();
+        let clocks = rcc.cfgr.freeze();
+
+        let gpioa = dp.gpioa.split();
+        let gpiob = dp.gpiob.split();
+
+        // TIM3 CH1..4 on PA6/PA7/PB0/PB1, AF2 (see super::hw_map::pwm).
+        let pa6: PA6<Alternate<2>> = gpioa.pa6.into_alternate::<2>();
+        let pa7: PA7<Alternate<2>> = gpioa.pa7.into_alternate::<2>();
+        let pb0: PB0<Alternate<2>> = gpiob.pb0.into_alternate::<2>();
+        let pb1: PB1<Alternate<2>> = gpiob.pb1.into_alternate::<2>();
+
+        let (mut a_plus, mut a_minus, mut b_plus, mut b_minus) =
+            dp.tim3.pwm((pa6, pa7, pb0, pb1), PWM_HZ.Hz(), &clocks);
+
+        let max_duty = a_plus.get_max_duty();
+
+        // Start centered (zero differential = no coil current) and enabled.
+        let mid = max_duty / 2;
+        a_plus.set_duty(mid);
+        a_minus.set_duty(mid);
+        b_plus.set_duty(mid);
+        b_minus.set_duty(mid);
+        a_plus.enable();
+        a_minus.enable();
+        b_plus.enable();
+        b_minus.enable();
+
+        Self { a_plus, a_minus, b_plus, b_minus, max_duty }
+    }
+
+    /// Map a signed coil command to a (plus, minus) duty pair using
+    /// locked-antiphase: plus = mid + v/2, minus = mid - v/2, so the
+    /// differential across the coil is proportional to v and its sign sets
+    /// direction. Saturates at the rails.
+    #[inline]
+    fn split_duty(&self, v: CoilCommand) -> (u16, u16) {
+        let mid = (self.max_duty / 2) as i32;
+        // Scale i16 full-scale to +/- mid.
+        let half = (v as i32 * mid) / (i16::MAX as i32);
+        let plus = (mid + half).clamp(0, self.max_duty as i32) as u16;
+        let minus = (mid - half).clamp(0, self.max_duty as i32) as u16;
+        (plus, minus)
     }
 }
 
@@ -35,8 +94,13 @@ impl Board for Servo57D {
     const NAME: &'static str = "MKS SERVO57D (N32L406)";
     const HAS_RS485: bool = true; // 48-pin package breaks out USART3
 
-    fn apply_coil_voltages(&mut self, _v_a: CoilCommand, _v_b: CoilCommand) {
-        todo!("map coil voltages to TIM3 CH1..4 duties via hw_map::pwm")
+    fn apply_coil_voltages(&mut self, v_a: CoilCommand, v_b: CoilCommand) {
+        let (ap, am) = self.split_duty(v_a);
+        let (bp, bm) = self.split_duty(v_b);
+        self.a_plus.set_duty(ap);
+        self.a_minus.set_duty(am);
+        self.b_plus.set_duty(bp);
+        self.b_minus.set_duty(bm);
     }
 
     fn read_coil_currents(&self) -> (CoilCurrent, CoilCurrent) {
