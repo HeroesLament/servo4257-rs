@@ -3,6 +3,7 @@
 //! See AGENTS.md and docs/ARCHITECTURE.md. Tiers: hot (ISRs) / boundary /
 //! motion / canopen (async). Dependency direction is strictly downward.
 
+pub mod app_meta;
 pub mod boundary;
 pub mod motion;
 pub mod hot;

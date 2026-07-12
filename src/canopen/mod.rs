@@ -4,3 +4,5 @@ pub mod od;
 pub mod cia402;
 pub mod pdo;
 pub mod transport;
+#[cfg(feature = "hw-can")]
+pub mod download;

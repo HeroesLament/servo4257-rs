@@ -2,8 +2,16 @@
 target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
-# runner = "probe-rs run --chip <N32L403/406 once defined>"
+# 57D = N32L406CBL7; custom target since probe-rs has no built-in def for this part.
+# For a 42D board swap to --chip N32L403KB.
+runner = "probe-rs run --chip N32L406CB --chip-description-path n32l40x.target.yaml"
 rustflags = ["-C", "link-arg=-Tlink.x"]
+
+[alias]
+# `cargo xtask <cmd>` runs the host build-pipeline tool. The explicit --target
+# escapes the thumbv7 default above (aliases run from this root, so they'd
+# otherwise inherit the embedded target and fail to build a std binary).
+xtask = "run --manifest-path tools/xtask/Cargo.toml --target aarch64-apple-darwin --release --"
 
 [env]
 DEFMT_LOG = "info"

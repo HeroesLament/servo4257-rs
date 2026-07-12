@@ -13,6 +13,19 @@ cortex-m-rt = "0.7.3"
 critical-section = "1.1.2"
 panic-halt = "1.0"
 embedded-hal-02 = { package = "embedded-hal", version = "0.2.7" }
+embedded-storage = "0.3.1"
+# CRC-32 for APP-META image verification. no_std; same algorithm constant
+# shared by bootloader, app, and the host-side xtask dist tool.
+crc = { version = "3", default-features = false }
+# CAN: same bxcan-ng the HAL is built on, so frame/id types match. nb for the
+# non-blocking transmit/receive results. heapless for fixed-capacity queues in
+# the CANopen layer (and the host loopback transport).
+bxcan = { package = "bxcan-ng", version = "0.8.0" }
+nb = "1"
+heapless = "0.8"
+# PAC-free CANopen protocol logic (Frame, CanTransport trait, SDO state
+# machine). Host-testable; the firmware provides the bxcan-backed transport.
+canopen-proto = { path = "../canopen-proto" }
 # embassy-executor = { version = "*", features = ["arch-cortex-m", "executor-thread"] }
 # embassy-time = "*"
 # embassy deferred to a later stage; link the HAL/PAC first.
@@ -25,6 +38,13 @@ n32l4 = { path = "../n32l4-pac" }
 default = []
 board-42d = ["n32l4xx-hal/n32l403", "n32l4/n32l403"]
 board-57d = ["n32l4xx-hal/n32l406", "n32l4/n32l406"]
+# Memory layout (mutually exclusive; default = full 128K standalone).
+# build.rs picks memory/{boot,app,full}.x accordingly.
+layout-boot = []
+layout-app = []
+# Enables the bxcan-backed hardware CAN transport. Off for host `cargo test`
+# (which exercises the loopback transport + frame logic on the dev machine).
+hw-can = []
 
 [[bin]]
 name = "servo42d"
@@ -33,6 +53,14 @@ required-features = ["board-42d"]
 [[bin]]
 name = "servo57d"
 required-features = ["board-57d"]
+
+[[bin]]
+name = "flashtest"
+required-features = ["board-57d"]
+
+[[bin]]
+name = "bootloader"
+required-features = ["board-57d", "layout-boot"]
 
 [profile.release]
 opt-level = "s"
