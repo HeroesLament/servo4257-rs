@@ -100,5 +100,13 @@ name = "asynccan"
 required-features = ["board-57d"]
 
 [[bin]]
+name = "spin_openloop"
+required-features = ["board-57d"]
+
+[[bin]]
+name = "spin_app"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
 name = "appstub"
 required-features = ["board-57d", "layout-app"]

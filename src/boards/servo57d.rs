@@ -20,6 +20,19 @@ use n32l4xx_hal::gpio::{Alternate, Output, PushPull,
 use n32l4xx_hal::spi::{Spi, Mode, Phase, Polarity};
 use n32l4xx_hal::adc::{Adc, config::{AdcConfig, InjectedSequence, InjectedTrigger, SampleTime, TriggerMode}};
 use n32l4xx_hal::pwm::{C1, C2, C3, C4, ComplementaryImpossible};
+use n32l4xx_hal::can::Can as HalCan;
+use bxcan::{filter::Mask32, Fifo, Frame as BxFrame, Id, StandardId};
+
+/// No-init RAM cell the bootloader reads to decide "stay in boot" (app.x
+/// `_boot_flag`); the magic value that means stay. Shared with the bootloader.
+const BOOT_FLAG: *mut u32 = 0x2000_5FF8 as *mut u32;
+const FLAG_STAY_IN_BOOT: u32 = 0xB007_57A4;
+
+/// bxCAN BTR for 500 kbps at PCLK1 = 16 MHz (this board's full-speed clock).
+/// tq = PCLK1/(BRP+1) = 16M/2 = 8 MHz → 125 ns; bit = SYNC(1)+TSEG1(13)+TSEG2(2)
+/// = 16 tq = 2 µs = 500 kbps, sample point 87.5%. bxCAN stores each field −1:
+/// BRP=1, TS1=12, TS2=1, SJW=0 → (1<<20)|(12<<16)|1 = 0x001C_0001.
+pub const BTR_500K_PCLK16: u32 = 0x001C_0001;
 
 /// PWM carrier frequency for the H-bridges. TODO: confirm against the current
 /// loop rate; 20 kHz is the design target (above audible, fits the budget).
@@ -55,14 +68,26 @@ pub struct Servo57D {
     spi: Spi<pac::Spi1>,
     enc_cs: PB6<Output<PushPull>>,
     en: PB7<Output<PushPull>>,
+    can: bxcan::Can<HalCan<pac::Can>>,
 }
 
 impl Servo57D {
     /// Construct and configure board peripherals from the raw device.
     /// Stage 2: clocks + TIM3 PWM only; other peripherals added incrementally.
     pub fn init(mut dp: pac::Peripherals) -> Self {
+        // Full-speed clock tree: 8 MHz HSE crystal -> PLL -> 64 MHz SYSCLK
+        // (SYSCLK_MAX). PCLK1 pinned to its 16 MHz ceiling, so the APB1
+        // prescaler is 4 and the APB1 timers (TIM3, the bridge PWM) clock at
+        // 2*PCLK1 = 32 MHz -> 32M/20kHz = 1600 PWM steps. This replaces the
+        // bare reset clock (MSI 4 MHz), which the PWM/ADC timing and the
+        // current-loop cycle budget all assume is gone.
         let rcc = dp.rcc.constrain();
-        let clocks = rcc.cfgr.freeze();
+        let clocks = rcc
+            .cfgr
+            .use_hse(8_000_000.Hz())
+            .sysclk(64_000_000.Hz())
+            .pclk1(16_000_000.Hz())
+            .freeze();
 
         let gpioa = dp.gpioa.split();
         let gpiob = dp.gpiob.split();
@@ -124,8 +149,21 @@ impl Servo57D {
         // Come up in the INACTIVE (disabled) state regardless of polarity.
         let en = gpiob.pb7.into_push_pull_output();
 
+        // ---- CAN (PA11 RX / PA12 TX, AF1; see hw_map::can) ----
+        // 500 kbps at the 16 MHz PCLK1. Accept-all filter — COB-ID filtering is
+        // software, above this layer. Brought up here (the drive owns its bus):
+        // telemetry/diagnostics during bring-up, PDO/SDO in the running app.
+        let hal_can = HalCan::new(dp.can);
+        hal_can.assign_pins((gpioa.pa11, gpioa.pa12));
+        let mut can = bxcan::Can::builder(hal_can)
+            .set_bit_timing(BTR_500K_PCLK16)
+            .leave_disabled();
+        can.modify_filters()
+            .enable_bank(0, Fifo::Fifo0, Mask32::accept_all());
+        nb::block!(can.enable_non_blocking()).ok();
+
         let mut board = Self {
-            a_plus, a_minus, b_plus, b_minus, max_duty, adc, spi, enc_cs, en,
+            a_plus, a_minus, b_plus, b_minus, max_duty, adc, spi, enc_cs, en, can,
         };
         // Fail-safe: explicitly command the output stage OFF at boot.
         board.set_output_enable(false);
@@ -144,6 +182,46 @@ impl Servo57D {
         let plus = (mid + half).clamp(0, self.max_duty as i32) as u16;
         let minus = (mid - half).clamp(0, self.max_duty as i32) as u16;
         (plus, minus)
+    }
+
+    /// Best-effort CAN transmit for telemetry / diagnostics: non-blocking, drops
+    /// the frame if all TX mailboxes are busy (telemetry is lossy by design).
+    /// `id` is an 11-bit standard COB-ID; `data` is 0..=8 bytes.
+    pub fn telemetry(&mut self, id: u16, data: &[u8]) {
+        if let Some(sid) = StandardId::new(id) {
+            let d = bxcan::Data::new(data).unwrap_or_else(bxcan::Data::empty);
+            let _ = self.can.transmit(&BxFrame::new_data(sid, d));
+        }
+    }
+
+    /// Poll CAN for the CiA-302 "enter update" command — an SDO access to
+    /// `0x1F51` (Program Control) on the node's RX COB-ID `0x601`. On a match:
+    /// **safe the output stage** (coils to zero, nEN off), latch the
+    /// stay-in-boot flag, and reset into the bootloader for an over-CAN reflash.
+    /// Returns normally when no such frame is pending; never returns on a match.
+    ///
+    /// Call this every main-loop iteration so the over-CAN dev loop stays live —
+    /// it is the app's only escape hatch back to the bootloader without SWD.
+    pub fn poll_reflash(&mut self) {
+        let f = match self.can.receive() {
+            Ok(f) => f,
+            Err(_) => return, // WouldBlock / overrun: nothing to act on
+        };
+        let id = match f.id() {
+            Id::Standard(s) => s.as_raw(),
+            Id::Extended(_) => return,
+        };
+        let data = match f.data() {
+            Some(d) => d,
+            None => return, // remote frame
+        };
+        if id == 0x601 && data.len() >= 3 && data[1] == 0x51 && data[2] == 0x1F {
+            // Safe the bridge before handing control to the bootloader.
+            self.apply_coil_voltages(0, 0);
+            self.set_output_enable(false);
+            unsafe { core::ptr::write_volatile(BOOT_FLAG, FLAG_STAY_IN_BOOT) };
+            cortex_m::peripheral::SCB::sys_reset();
+        }
     }
 }
 
