@@ -128,5 +128,13 @@ name = "foc_spin"
 required-features = ["board-57d", "layout-app"]
 
 [[bin]]
+name = "polecal"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "cal4"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
 name = "appstub"
 required-features = ["board-57d", "layout-app"]
