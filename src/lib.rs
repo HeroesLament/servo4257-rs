@@ -10,6 +10,8 @@ pub mod hot;
 pub mod canopen;
 pub mod board;
 pub mod boards;
+pub mod shared;
+pub mod rt;
 
 /// Shared firmware entry point. Each src/bin/<board>.rs selects its board
 /// profile + PAC device feature and calls run().

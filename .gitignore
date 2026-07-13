@@ -1,4 +1,6 @@
 /target
+/dist
+.vscode/
 **/*.rs.bk
 *.pack
 Cargo.lock

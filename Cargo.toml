@@ -8,7 +8,7 @@ description = "CANopen CiA 402 (csp/ip) firmware for MKS SERVO42D/57D stepper dr
 # PAC + HAL come from the separate infra repo; wire as path/git deps once it
 # exists. Left commented so the repo is honest about not-yet-buildable status.
 [dependencies]
-cortex-m = "0.7.7"
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7.3"
 critical-section = "1.1.2"
 panic-halt = "1.0"
@@ -31,6 +31,13 @@ canopen-proto = { path = "../canopen-proto" }
 # embassy deferred to a later stage; link the HAL/PAC first.
 n32l4xx-hal = { path = "../n32l4xx-hal", default-features = false, features = ["rt"] }
 n32l4 = { path = "../n32l4-pac" }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread"] }
+embassy-time = "0.5.1"
+embassy-time-driver = { version = "0.2.2", features = ["tick-hz-1_000_000"] }
+embassy-sync = "0.8.0"
+embassy-futures = "0.1.2"
+embassy-time-queue-utils = "0.3.2"
+static_cell = "2.1.1"
 
 [features]
 # Exactly one board feature per build; mutually exclusive -> separate cargo
@@ -71,3 +78,27 @@ codegen-units = 1
 [profile.dev]
 opt-level = "s"
 lto = false
+
+[[bin]]
+name = "flashstress"
+required-features = ["board-57d"]
+
+[[bin]]
+name = "flashdiag"
+required-features = ["board-57d"]
+
+[[bin]]
+name = "embtest"
+required-features = ["board-57d"]
+
+[[bin]]
+name = "asyncdiag"
+required-features = ["board-57d"]
+
+[[bin]]
+name = "asynccan"
+required-features = ["board-57d"]
+
+[[bin]]
+name = "appstub"
+required-features = ["board-57d", "layout-app"]
