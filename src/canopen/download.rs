@@ -62,6 +62,8 @@ impl FlashSink for FlashBackend<'_> {
     }
 
     fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()> {
+        // Telemetry: STATUS[8]=offset, STATUS[9]=stage.
+        unsafe { core::ptr::write_volatile(0x2000_0020 as *mut u32, offset) };
         // Erase (in order) any pages this write touches that aren't yet erased.
         if !bytes.is_empty() {
             let last_page = (offset + bytes.len() as u32 - 1) / PAGE_SIZE;
@@ -71,13 +73,18 @@ impl FlashSink for FlashBackend<'_> {
             };
             while page <= last_page {
                 let page_off = APP_FLASH_OFFSET + page * PAGE_SIZE;
+                unsafe { core::ptr::write_volatile(0x2000_0024 as *mut u32, 0xE1_00_0000 | page) };
                 self.flash.erase(page_off, page_off + PAGE_SIZE).map_err(|_| ())?;
+                unsafe { core::ptr::write_volatile(0x2000_0024 as *mut u32, 0xE2_00_0000 | page) };
                 self.erased_through = Some(page);
                 page += 1;
             }
         }
         let flash_off = APP_FLASH_OFFSET + offset;
-        self.flash.write(flash_off, bytes).map_err(|_| ())
+        unsafe { core::ptr::write_volatile(0x2000_0024 as *mut u32, 0xF3_00_0000) };
+        let r = self.flash.write(flash_off, bytes).map_err(|_| ());
+        unsafe { core::ptr::write_volatile(0x2000_0024 as *mut u32, 0xF4_00_0000) };
+        r
     }
 
     fn finalize(&mut self, total_len: u32) -> Result<(), ()> {
@@ -97,7 +104,7 @@ impl FlashSink for FlashBackend<'_> {
         // The app-region erase does NOT cover the meta page (separate page), so
         // erase it explicitly before stamping the record.
         self.flash
-            .erase(META_FLASH_OFFSET, META_FLASH_OFFSET + AppMeta::SIZE as u32)
+            .erase(META_FLASH_OFFSET, META_FLASH_OFFSET + PAGE_SIZE)
             .map_err(|_| ())?;
         self.flash.write(META_FLASH_OFFSET, &bytes).map_err(|_| ())
     }
