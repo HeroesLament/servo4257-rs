@@ -171,17 +171,38 @@ impl Servo57D {
     }
 
     /// Map a signed coil command to a (plus, minus) duty pair using
-    /// locked-antiphase: plus = mid + v/2, minus = mid - v/2, so the
-    /// differential across the coil is proportional to v and its sign sets
-    /// direction. Saturates at the rails.
+    /// **sign-magnitude** drive: energize one half-bridge with |v| and hold the
+    /// other at GND, so the coil is driven unipolar-switched in the direction
+    /// set by the sign.
+    ///
+    /// NOTE: this replaced locked-antiphase (both half-bridges at mid ± v/2).
+    /// On hardware, locked-antiphase failed to reverse the coil — both bridges
+    /// chopping ±Vbus draws large ripple current that pins a current-limited
+    /// supply and collapses the net drive, so the motor only ever saw two
+    /// positions and twitched. Sign-magnitude (verified with `bridgetest`)
+    /// commutates cleanly. All four half-bridges are healthy.
     #[inline]
     fn split_duty(&self, v: CoilCommand) -> (u16, u16) {
-        let mid = (self.max_duty / 2) as i32;
-        // Scale i16 full-scale to +/- mid.
-        let half = (v as i32 * mid) / (i16::MAX as i32);
-        let plus = (mid + half).clamp(0, self.max_duty as i32) as u16;
-        let minus = (mid - half).clamp(0, self.max_duty as i32) as u16;
-        (plus, minus)
+        let mag = ((v.unsigned_abs() as u32 * self.max_duty as u32) / (i16::MAX as u32)) as u16;
+        if v >= 0 {
+            (mag, 0)
+        } else {
+            (0, mag)
+        }
+    }
+
+    /// Diagnostic: set the four half-bridge PWM duties directly (a+, a−, b+, b−),
+    /// bypassing the locked-antiphase mapping — for bridge/hardware bring-up.
+    pub fn set_raw_duties(&mut self, ap: u16, am: u16, bp: u16, bm: u16) {
+        self.a_plus.set_duty(ap);
+        self.a_minus.set_duty(am);
+        self.b_plus.set_duty(bp);
+        self.b_minus.set_duty(bm);
+    }
+
+    /// Full-scale PWM duty (100%).
+    pub fn max_duty(&self) -> u16 {
+        self.max_duty
     }
 
     /// Best-effort CAN transmit for telemetry / diagnostics: non-blocking, drops
@@ -258,12 +279,20 @@ impl Board for Servo57D {
         // TODO: verify even-parity (bit0) and No_Mag_Warning (bit1) and
         // reject/flag bad reads; the read command byte may need adjusting to
         // the consolidated angle-read opcode once confirmed on hardware.
-        let mut buf = [0u8, 0u8];
+        // MT6816 register read: two frames. Each frame = [0x80|addr, dummy];
+        // the register byte comes back in the 2nd byte. Reg 0x03 = Angle<13:6>,
+        // reg 0x04 = Angle<5:0> in bits 7:2 (bit1 No_Mag, bit0 parity).
+        let mut hi = [0x83u8, 0x00u8];
         let _ = self.enc_cs.set_low();
-        let _ = self.spi.transfer_in_place(&mut buf);
+        let _ = self.spi.transfer_in_place(&mut hi);
         let _ = self.enc_cs.set_high();
-        let word = ((buf[0] as u16) << 8) | (buf[1] as u16);
-        let angle14 = word >> 2; // drop No_Mag + parity
+
+        let mut lo = [0x84u8, 0x00u8];
+        let _ = self.enc_cs.set_low();
+        let _ = self.spi.transfer_in_place(&mut lo);
+        let _ = self.enc_cs.set_high();
+
+        let angle14 = ((hi[1] as u16) << 6) | ((lo[1] as u16) >> 2);
         // Map 14-bit (0..16384) to full-circle u16 (0..=65535): << 2.
         angle14 << 2
     }

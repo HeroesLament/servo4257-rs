@@ -108,5 +108,25 @@ name = "spin_app"
 required-features = ["board-57d", "layout-app"]
 
 [[bin]]
+name = "phasetest"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "coilhold"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "bridgetest"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "enctest"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "foc_spin"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
 name = "appstub"
 required-features = ["board-57d", "layout-app"]

@@ -23,10 +23,13 @@ use servo4257_rs::board::Board;
 use servo4257_rs::boards::ActiveBoard;
 use servo4257_rs::motion::trig::sin_cos;
 
-/// Voltage-vector amplitude (i16 CoilCommand). ~12% bridge, ~0.3-0.4 A @ 12 V.
-const AMP: i16 = 4000;
-/// Rotation speed for phase C (electrical rev/s).
-const SPIN_ELEC_HZ: f32 = 2.0;
+/// Voltage-vector amplitude (i16 CoilCommand). Kept low so both coils together
+/// stay within the supply budget (no diagonal fold-back). Open-loop voltage
+/// drive is R/Vbus-sensitive — the current loop will fix this properly later.
+const AMP: i16 = 3000;
+/// Rotation speed for phase C (electrical rev/s). Slow — open-loop must start
+/// gently or the rotor stalls and dithers instead of tracking the field.
+const SPIN_ELEC_HZ: f32 = 0.5;
 /// Over-current trip: |raw ADC − baseline| counts (coil A; coil B sense is dead).
 const TRIP_COUNTS: i32 = 450;
 /// Telemetry COB-ID; frame = [phase, pad, angle:u16, iA:u16, iB:u16] LE.
