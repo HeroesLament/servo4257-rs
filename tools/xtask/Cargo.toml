@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Build-pipeline automation for servo4257-rs (dist: app.img + APP-META)"
+publish = false
+
+[dependencies]
+# Same CRC crate + algorithm as the firmware (app_meta.rs CRC_32_ISO_HDLC). Host
+# build, so std is fine; the checksum is bit-identical to the no_std side.
+crc = "3"
+anyhow = "1"
+object = "0.36"
+clap = { version = "4", features = ["derive"] }

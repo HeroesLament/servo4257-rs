@@ -1,0 +1,10 @@
+# xtask is a HOST tool. The firmware crate's .cargo/config.toml pins
+# thumbv7em-none-eabihf as the default target; this package must NOT inherit
+# that. We don't set [build].target here, so cargo uses the host triple.
+#
+# (Cargo merges .cargo/config.toml hierarchically from the cwd upward. Running
+# `cargo run` from tools/xtask/ picks up THIS file first; the host default
+# wins because we leave target unset. The firmware build that xtask invokes is
+# launched with an explicit --target via the firmware crate's own config.)
+[build]
+# Intentionally empty: use the host default target.

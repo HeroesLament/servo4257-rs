@@ -1,6 +1,8 @@
 /target
 /dist
 .vscode/
+# 117MB vendored DFP (CMSIS toolbox, packs, datasheets) - kept locally only.
+/tools/n32l40x_dfp
 **/*.rs.bk
 *.pack
 Cargo.lock
