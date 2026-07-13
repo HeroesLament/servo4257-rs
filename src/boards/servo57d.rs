@@ -224,25 +224,36 @@ impl Servo57D {
     /// Call this every main-loop iteration so the over-CAN dev loop stays live —
     /// it is the app's only escape hatch back to the bootloader without SWD.
     pub fn poll_reflash(&mut self) {
-        let f = match self.can.receive() {
-            Ok(f) => f,
-            Err(_) => return, // WouldBlock / overrun: nothing to act on
-        };
+        if let Some((id, data, len)) = self.can_recv() {
+            if id == 0x601 && len >= 3 && data[1] == 0x51 && data[2] == 0x1F {
+                self.reboot_to_bootloader();
+            }
+        }
+    }
+
+    /// Non-blocking CAN receive: returns `(cob_id, data, len)` for the next
+    /// pending standard data frame, or `None`. General-purpose — lets an app
+    /// dispatch its own command protocol while still watching for enter-update.
+    pub fn can_recv(&mut self) -> Option<(u16, [u8; 8], usize)> {
+        let f = self.can.receive().ok()?;
         let id = match f.id() {
             Id::Standard(s) => s.as_raw(),
-            Id::Extended(_) => return,
+            Id::Extended(_) => return None,
         };
-        let data = match f.data() {
-            Some(d) => d,
-            None => return, // remote frame
-        };
-        if id == 0x601 && data.len() >= 3 && data[1] == 0x51 && data[2] == 0x1F {
-            // Safe the bridge before handing control to the bootloader.
-            self.apply_coil_voltages(0, 0);
-            self.set_output_enable(false);
-            unsafe { core::ptr::write_volatile(BOOT_FLAG, FLAG_STAY_IN_BOOT) };
-            cortex_m::peripheral::SCB::sys_reset();
-        }
+        let data = f.data()?;
+        let len = data.len().min(8);
+        let mut buf = [0u8; 8];
+        buf[..len].copy_from_slice(&data[..len]);
+        Some((id, buf, len))
+    }
+
+    /// Safe the output stage, latch the stay-in-boot flag, and reset into the
+    /// bootloader for an over-CAN reflash. Never returns.
+    pub fn reboot_to_bootloader(&mut self) -> ! {
+        self.apply_coil_voltages(0, 0);
+        self.set_output_enable(false);
+        unsafe { core::ptr::write_volatile(BOOT_FLAG, FLAG_STAY_IN_BOOT) };
+        cortex_m::peripheral::SCB::sys_reset()
     }
 }
 

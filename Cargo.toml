@@ -136,5 +136,9 @@ name = "cal4"
 required-features = ["board-57d", "layout-app"]
 
 [[bin]]
+name = "instr"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
 name = "appstub"
 required-features = ["board-57d", "layout-app"]
