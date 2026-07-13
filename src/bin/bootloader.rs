@@ -10,7 +10,7 @@
 //!   [1] boot_flag value read from _boot_flag
 //!   [2] app SP   (word @ APP_BASE)
 //!   [3] app reset vector (word @ APP_BASE+4)
-//!   [4] decision: 0xJUMP=jump-to-app, 0x5TAY=stay-in-bootloader
+//!   [4] decision: 0x0000_3001 jump · 0x057A_4000 forced-stay · 0x1057_7E00 stayed via CAN listen window
 //!   [5] meta state: 0=absent(heuristic used) 1=present+valid 2=present+BAD-CRC
 
 use panic_halt as _;
@@ -62,15 +62,28 @@ fn main() -> ! {
         sp_ok && rv_ok
     };
 
-    let stay = flag == FLAG_STAY_IN_BOOT || !app_valid;
+    let force_stay = flag == FLAG_STAY_IN_BOOT || !app_valid;
 
-    if stay {
-        set(4, 0x5_7A4_000);
-        run_bootloader_service();
+    // With a CAN transport, ALWAYS enter the service: if forced to stay it runs
+    // the download loop; otherwise it opens a brief CAN listen window and only
+    // jumps if no enter-update arrives (see run_bootloader_service). This is the
+    // un-brickable recovery net — a valid-but-broken app is always catchable by
+    // resetting the board and spamming the enter-update, with no app cooperation
+    // and no SWD required.
+    #[cfg(feature = "hw-can")]
+    run_bootloader_service(force_stay);
+
+    // No CAN transport compiled in: no window is possible. Honor a forced stay
+    // by parking (SWD-recoverable); otherwise jump.
+    #[cfg(not(feature = "hw-can"))]
+    {
+        if force_stay {
+            set(4, 0x057A_4000);
+            run_bootloader_service();
+        }
+        set(4, 0x0000_3001);
+        jump_to_app();
     }
-
-    set(4, 0x0000_3001); // JUMP decision
-    jump_to_app();
 }
 
 /// The "stay in bootloader" service: bring up CAN and run the CANopen download
@@ -78,12 +91,12 @@ fn main() -> ! {
 /// on abort it parks (SWD-recoverable). Without the `hw-can` feature there's no
 /// transport, so it simply parks.
 #[cfg(feature = "hw-can")]
-fn run_bootloader_service() -> ! {
+fn run_bootloader_service(force_stay: bool) -> ! {
     use n32l4xx_hal::prelude::*;
     use n32l4xx_hal::gpio::GpioExt;
     use n32l4xx_hal::can::Can;
     use n32l4xx_hal::fmc::FMCExt;
-    use servo4257_rs::canopen::transport::BxCanTransport;
+    use servo4257_rs::canopen::transport::{BxCanTransport, CanTransport};
     use servo4257_rs::canopen::download::{run_download, DownloadOutcome};
 
     // SAFETY: the bootloader is the sole owner of the device here; the app has
@@ -123,7 +136,34 @@ fn run_bootloader_service() -> ! {
 
     let mut can = BxCanTransport::new(hal_can);
 
-    set(6, 0xCA_00_0000); // CAN up, entering download service
+    set(6, 0xCA_00_0000); // CAN up
+
+    // Recovery listen window. If we were not forced to stay (the app is valid
+    // and would normally be jumped to), poll CAN for ~300 ms: any CiA-302
+    // enter-update (SDO to 0x1F51 on COB-ID 0x601) traps us here for a reflash;
+    // otherwise we fall through to the jump. sysclk = 8 MHz, so delay(800) ≈
+    // 100 µs and 3000 iterations ≈ 300 ms. Ordinary heartbeat/PDO traffic does
+    // not match the 0x1F51 pattern, so it cannot false-trap the board.
+    let stay = force_stay || {
+        let mut caught = false;
+        for _ in 0..3000 {
+            if let Ok(Some(f)) = can.try_recv() {
+                if f.id == 0x601 && f.len >= 3 && f.data[1] == 0x51 && f.data[2] == 0x1F {
+                    caught = true;
+                    break;
+                }
+            }
+            cortex_m::asm::delay(800);
+        }
+        caught
+    };
+
+    if !stay {
+        set(4, 0x0000_3001); // JUMP: window expired, app valid
+        jump_to_app();
+    }
+    // Stayed: forced (0x057A_4000) or caught by the CAN listen window (0x1057_7E00).
+    set(4, if force_stay { 0x057A_4000 } else { 0x1057_7E00 });
 
     match run_download(&mut can, &mut flash, |code| set(7, code)) {
         DownloadOutcome::Complete { len } => {
