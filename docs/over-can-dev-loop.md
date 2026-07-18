@@ -188,3 +188,23 @@ the chip is mid-reset — retry once before treating it as a real fault.
 
 A fresh 42D/57D board joins the over-CAN fleet after a one-time SWD flash of the
 bootloader. After that, every subsequent update is over CAN via the loop above.
+
+## Recovery without SWD (once the listen-window bootloader is provisioned)
+
+The BOOT0 / SWD dance above is now the *fallback of last resort*. With the
+listen-window bootloader flashed (`--features hw-can`, listen window enabled)
+and an app that carries the board-management OD + IWDG (`commlab`, and the real
+app once it adopts them), a wedged board recovers over CAN alone:
+
+- **Running app that misbehaves:** `Board.stay_in_boot(node)` reboots it into
+  the bootloader over CAN.
+- **Hung app (no CAN response):** the IWDG resets it within ~1 s; the bootloader
+  then opens a ~300 ms CAN listen window on that boot. `Board.recover(device:)`
+  spams the stay command across the window — hold it running and power-cycle,
+  and the board lands in the bootloader ready for `Master.download`.
+
+See `docs/commutation-profile.md` for the `0x2F00` management objects and the
+`Board` / `Commutation` host modules. The listen window restores the RCC to
+reset defaults before jumping, so the app inits clocks cleanly (a `sysclk(16M)`
+window config once panicked the HAL `freeze()` → boot hang; the window now uses
+the proven HSE-8 / PCLK1-4 MHz service clock).
