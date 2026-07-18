@@ -15,8 +15,9 @@ use n32l4xx_hal::pac;
 use n32l4xx_hal::prelude::*;
 use n32l4xx_hal::pwm::{Pwm, PwmExt};
 use embedded_hal_02::PwmPin;
-use n32l4xx_hal::gpio::{Alternate, Output, PushPull,
-    gpioa::{PA6, PA7}, gpiob::{PB0, PB1, PB6, PB7}};
+use n32l4xx_hal::gpio::{Alternate, OpenDrain, Output, PushPull,
+    gpioa::{PA6, PA7}, gpiob::{PB0, PB1, PB6, PB7, PB8, PB9}};
+use n32l4xx_hal::i2c::I2c;
 use n32l4xx_hal::spi::{Spi, Mode, Phase, Polarity};
 use n32l4xx_hal::adc::{Adc, config::{AdcConfig, InjectedSequence, InjectedTrigger, SampleTime, TriggerMode}};
 use n32l4xx_hal::pwm::{C1, C2, C3, C4, ComplementaryImpossible};
@@ -56,6 +57,9 @@ type Ch2 = Pwm<pac::Tim3, C2, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveH
 type Ch3 = Pwm<pac::Tim3, C3, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveHigh, n32l4xx_hal::pwm::ActiveHigh>;
 type Ch4 = Pwm<pac::Tim3, C4, ComplementaryImpossible, n32l4xx_hal::pwm::ActiveHigh, n32l4xx_hal::pwm::ActiveHigh>;
 
+/// The board's OLED I2C bus: I2C1 on PB8 (SCL) / PB9 (SDA), AF4, open-drain.
+pub type DisplayI2c = I2c<pac::I2c1, (PB8<Alternate<4, OpenDrain>>, PB9<Alternate<4, OpenDrain>>)>;
+
 /// SERVO57D board handle. Owns the configured peripherals.
 pub struct Servo57D {
     // Coil A = (a_plus CH1, a_minus CH2); Coil B = (b_plus CH3, b_minus CH4).
@@ -69,6 +73,8 @@ pub struct Servo57D {
     enc_cs: PB6<Output<PushPull>>,
     en: PB7<Output<PushPull>>,
     can: bxcan::Can<HalCan<pac::Can>>,
+    /// OLED I2C bus, taken once via `take_display_i2c()`.
+    display_i2c: Option<DisplayI2c>,
 }
 
 impl Servo57D {
@@ -162,12 +168,27 @@ impl Servo57D {
             .enable_bank(0, Fifo::Fifo0, Mask32::accept_all());
         nb::block!(can.enable_non_blocking()).ok();
 
+        // ---- OLED I2C1 on PB8 (SCL) / PB9 (SDA), AF4 open-drain, 400 kHz ----
+        // See hw_map / SERVO57D schematic (U9 OLED header). Built here so the
+        // drive owns its display bus; commlab / the app take it via
+        // `take_display_i2c()`. 400 kHz fast-mode at PCLK1 = 16 MHz.
+        let scl = gpiob.pb8.into_alternate_open_drain::<4>();
+        let sda = gpiob.pb9.into_alternate_open_drain::<4>();
+        let display_i2c = I2c::i2c1(dp.i2c1, (scl, sda), 400_000.Hz(), &clocks);
+
         let mut board = Self {
             a_plus, a_minus, b_plus, b_minus, max_duty, adc, spi, enc_cs, en, can,
+            display_i2c: Some(display_i2c),
         };
         // Fail-safe: explicitly command the output stage OFF at boot.
         board.set_output_enable(false);
         board
+    }
+
+    /// Take ownership of the OLED I2C bus (once). Returns `None` on a second
+    /// call. The caller drives the SSD1306 through it.
+    pub fn take_display_i2c(&mut self) -> Option<DisplayI2c> {
+        self.display_i2c.take()
     }
 
     /// Map a signed coil command to a (plus, minus) duty pair using
@@ -357,5 +378,14 @@ impl Board for Servo57D {
         } else {
             let _ = self.en.set_low();
         }
+    }
+}
+
+/// Let the `display` SSD1306 driver push bytes over the board's I2C1 bus.
+impl crate::display::I2cWrite for DisplayI2c {
+    type Error = n32l4xx_hal::i2c::Error;
+    #[inline]
+    fn write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), Self::Error> {
+        I2c::write(self, addr, bytes)
     }
 }

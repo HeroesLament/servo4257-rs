@@ -7,9 +7,11 @@
 //!
 //! Wire in with `pub mod shared;` in lib.rs.
 
+pub mod params;
 pub mod setpoints;
 pub mod telemetry;
 // pub mod events;   // Signals (SYNC / FAULT / CONFIG_CHANGED) — pending embassy-sync
 
+pub use params::{CommMode, CommParams, Snapshot, PARAMS};
 pub use setpoints::{Mode, Setpoints, SETPOINTS};
 pub use telemetry::{SeqLock, Telem, TELEM};

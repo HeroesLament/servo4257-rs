@@ -69,8 +69,118 @@ fn main() -> ! {
         run_bootloader_service();
     }
 
+    // App is valid and no stay flag — but before jumping, open a short CAN
+    // LISTEN WINDOW (~300 ms). If a management/enter-update command arrives, we
+    // stay in the bootloader instead of booting. This is the recovery net: a
+    // hung app (which never answers CAN) is caught by power-cycling and sending
+    // a stay command during this window. Without it, a bricked app forces SWD.
+    // CAN listen window (~300 ms) before jumping — the recovery net for a hung
+    // app. The window brings up CAN (and thus reconfigures the clock tree); if it
+    // elapses without a stay request we RESTORE THE RCC TO RESET DEFAULTS before
+    // jumping, so the app's `rcc.freeze()` starts from the same clean state it
+    // would see on a cold boot. (Root-caused: leaving the window's HSE/PLL clocks
+    // in place hung the app in clock init before CAN came up.)
+    #[cfg(feature = "hw-can")]
+    {
+        if listen_window_wants_stay() {
+            set(4, 0x1157_E000); // window-stay decision
+            run_bootloader_service();
+        }
+        set(4, 0x1157_5717); // window elapsed → restore clocks, then jump
+        rcc_reset_to_default();
+    }
+
     set(4, 0x0000_3001); // JUMP decision
     jump_to_app();
+}
+
+/// Restore RCC to its post-reset state: SYSCLK ← HSI, then clear the config so
+/// PLL/HSE/prescalers are all back to defaults. Must run before jumping to an
+/// app that will reconfigure clocks from scratch — a HAL `rcc.freeze()` assumes
+/// a clean reset state and can hang if it inherits a live PLL. Mirrors the
+/// classic STM32 "deinit RCC" sequence, adapted to the N32L40x register layout.
+#[cfg(feature = "hw-can")]
+fn rcc_reset_to_default() {
+    use n32l4xx_hal::pac;
+    let rcc = unsafe { &*pac::Rcc::ptr() };
+
+    // 1. Ensure HSI is on and ready, then switch SYSCLK to it.
+    rcc.ctrl().modify(|_, w| w.hsien().set_bit());
+    while rcc.ctrl().read().hsirdf().bit_is_clear() {}
+    rcc.cfg().modify(|_, w| unsafe { w.sclksw().bits(0b00) }); // 00 = HSI
+    while rcc.cfg().read().sclksts().bits() != 0b00 {}
+
+    // 2. Turn off HSE, PLL, CSS, and clear the bypass.
+    rcc.ctrl()
+        .modify(|_, w| w.hseen().clear_bit().pllen().clear_bit().clkssen().clear_bit().hsebp().clear_bit());
+    while rcc.ctrl().read().pllrdf().bit_is_set() {}
+
+    // 3. Clear CFG (prescalers, PLL source/mul, MCO) back to reset (0).
+    rcc.cfg().reset();
+}
+
+/// Bring up CAN and listen for ~300 ms for a "stay in bootloader" request:
+/// either the CiA-302 enter-update poke (`0x1F51`) or a board-management
+/// stay/reboot write (`0x2F00:02`/`:01`). Returns true to stay.
+///
+/// This runs on the *bare reset clock* so it's fast to enter — but CAN needs a
+/// known PCLK1 for its bit timing, so we set HSE→16 MHz PCLK1 first (matching
+/// `BxCanTransport`'s BTR). Kept minimal: no flash driver, just a receive poll.
+#[cfg(feature = "hw-can")]
+fn listen_window_wants_stay() -> bool {
+    use n32l4xx_hal::prelude::*;
+    use n32l4xx_hal::can::Can;
+    use servo4257_rs::canopen::transport::{BxCanTransport, CanTransport};
+
+    let dp = unsafe { n32l4xx_hal::pac::Peripherals::steal() };
+
+    // EXACT same clock config as run_bootloader_service (proven working): HSE
+    // 8 MHz direct → sysclk 8, hclk/pclk1 4 MHz. No PLL. BxCanTransport's
+    // BTR_500K_8MHZ (0x00050000) is derived for this 4 MHz PCLK1. A `sysclk(16M)`
+    // here needs the PLL and made the HAL `freeze()` panic (→ panic_halt spin,
+    // which read as "app won't boot"). Match the service to stay valid.
+    let _clocks = dp
+        .rcc
+        .constrain()
+        .cfgr
+        .use_hse(8_000_000.Hz())
+        .sysclk(8_000_000.Hz())
+        .hclk(4_000_000.Hz())
+        .pclk1(4_000_000.Hz())
+        .freeze();
+
+    let gpioa = dp.gpioa.split();
+    let hal_can = Can::new(dp.can);
+    hal_can.assign_pins((gpioa.pa11, gpioa.pa12));
+    let mut can = BxCanTransport::new(hal_can);
+
+    set(6, 0xCA_11_0000); // listen window open
+
+    // ~300 ms of polling. The core is at 16 MHz here; a simple spin-count budget
+    // bounds the window without a timer. RX_COBID = 0x601 (node 1).
+    const RX_COBID: u16 = 0x601;
+    // 16 MHz, ~a few cycles per poll iteration → ~300 ms budget.
+    let mut budget: u32 = 1_200_000;
+    while budget > 0 {
+        budget -= 1;
+        if let Ok(Some(frame)) = can.try_recv() {
+            if frame.id == RX_COBID {
+                let d = frame.payload();
+                // enter-update poke: [.., idx=0x1F51, ..]
+                let is_enter_update = d.len() >= 3 && d[1] == 0x51 && d[2] == 0x1F;
+                // mgmt stay/reboot write: [0x2x, idx=0x2F00, sub in {01,02}]
+                let is_mgmt_stay = d.len() >= 4
+                    && (d[0] & 0xE0) == 0x20
+                    && d[1] == 0x00
+                    && d[2] == 0x2F
+                    && (d[3] == 0x01 || d[3] == 0x02);
+                if is_enter_update || is_mgmt_stay {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// The "stay in bootloader" service: bring up CAN and run the CANopen download

@@ -152,5 +152,9 @@ name = "ramfoc"
 required-features = ["board-57d"]
 
 [[bin]]
+name = "commlab"
+required-features = ["board-57d", "layout-app", "hw-can"]
+
+[[bin]]
 name = "appstub"
 required-features = ["board-57d", "layout-app"]

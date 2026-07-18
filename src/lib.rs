@@ -10,6 +10,7 @@ pub mod hot;
 pub mod canopen;
 pub mod board;
 pub mod boards;
+pub mod display;
 pub mod shared;
 pub mod rt;
 
