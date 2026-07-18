@@ -128,6 +128,26 @@ name = "foc_spin"
 required-features = ["board-57d", "layout-app"]
 
 [[bin]]
+name = "focdiag"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "spid"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "foccal"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "holdtest"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "spinsweep"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
 name = "polecal"
 required-features = ["board-57d", "layout-app"]
 

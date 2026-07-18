@@ -11,5 +11,4 @@ publish = false
 # build, so std is fine; the checksum is bit-identical to the no_std side.
 crc = "3"
 anyhow = "1"
-object = "0.36"
 clap = { version = "4", features = ["derive"] }

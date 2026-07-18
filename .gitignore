@@ -12,3 +12,5 @@ Cargo.lock
 # Large vendor reference schematics/datasheets - kept locally, not committed.
 # Provenance for the verified hw_map lives in code comments + docs/HARDWARE.md.
 *.pdf
+/tools/xtask/target
+/target

@@ -22,7 +22,6 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use object::{Object, ObjectSegment};
 
 // --- APP-META layout constants: keep in lockstep with src/app_meta.rs ---
 const APP_META_MAGIC: u32 = 0x4E33_324D; // "N32M"
@@ -57,23 +56,41 @@ enum Cmd {
         /// Output directory for app.bin / app.img.
         #[arg(long, default_value = "dist")]
         out: PathBuf,
+        /// Override the binary to package (default: `servo<board>`). Use e.g.
+        /// `--bin commlab` to dist the Commutation Lab image instead of the app.
+        #[arg(long)]
+        bin: Option<String>,
+        /// Extra comma-separated cargo features to add on top of
+        /// `board-<board>,layout-app` (e.g. `hw-can` for commlab).
+        #[arg(long)]
+        features: Option<String>,
     },
 }
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Dist { board, fw_version, debug, out } => dist(&board, fw_version, debug, &out),
+        Cmd::Dist { board, fw_version, debug, out, bin, features } => {
+            dist(&board, fw_version, debug, &out, bin.as_deref(), features.as_deref())
+        }
     }
 }
 
-fn dist(board: &str, fw_version: u32, debug: bool, out: &Path) -> Result<()> {
+fn dist(
+    board: &str,
+    fw_version: u32,
+    debug: bool,
+    out: &Path,
+    bin: Option<&str>,
+    extra_features: Option<&str>,
+) -> Result<()> {
     let board_feat = match board {
         "57d" => "board-57d",
         "42d" => "board-42d",
         other => bail!("unknown board {other:?}; expected 57d or 42d"),
     };
-    // The app bin name follows the board (src/bin/servo57d.rs etc).
-    let bin_name = format!("servo{board}");
+    // The app bin name follows the board (src/bin/servo57d.rs etc) unless
+    // overridden with --bin (e.g. --bin commlab).
+    let bin_name = bin.map(String::from).unwrap_or_else(|| format!("servo{board}"));
 
     // Firmware crate root = two levels up from tools/xtask/.
     let fw_root = workspace_root()?;
@@ -81,7 +98,11 @@ fn dist(board: &str, fw_version: u32, debug: bool, out: &Path) -> Result<()> {
     let profile_dir = if debug { "debug" } else { "release" };
 
     // 1. Build the application for the chip, app layout.
-    eprintln!("==> building {bin_name} ({board_feat}, layout-app, {profile})");
+    let feat = match extra_features {
+        Some(extra) if !extra.is_empty() => format!("{board_feat},layout-app,{extra}"),
+        _ => format!("{board_feat},layout-app"),
+    };
+    eprintln!("==> building {bin_name} ({feat}, {profile})");
     let status = Command::new("cargo")
         .current_dir(&fw_root)
         .args([
@@ -90,7 +111,7 @@ fn dist(board: &str, fw_version: u32, debug: bool, out: &Path) -> Result<()> {
             &bin_name,
             "--no-default-features",
             "--features",
-            &format!("{board_feat},layout-app"),
+            &feat,
         ])
         .args(if debug { &[][..] } else { &["--release"][..] })
         .status()
@@ -99,9 +120,12 @@ fn dist(board: &str, fw_version: u32, debug: bool, out: &Path) -> Result<()> {
         bail!("app build failed");
     }
 
-    // 2. Locate the ELF and extract a raw binary image from its loadable
-    //    segments. Using the `object` crate (not objcopy) so we control the
-    //    exact byte range and never inherit objcopy's section-gap padding.
+    // 2. Locate the ELF and extract a raw flash image with objcopy. objcopy is
+    //    the canonical, battle-tested ELF→bin tool: it walks PT_LOAD by *load*
+    //    address (LMA), 0xFF-fills inter-segment gaps, and drops non-alloc
+    //    sections — exactly the flash picture. A prior hand-rolled `object`-crate
+    //    extractor got the LMA/offset math wrong and emitted the ELF header as
+    //    "app.bin"; shelling out to objcopy removes that whole class of bug.
     let elf_path = fw_root
         .join("target/thumbv7em-none-eabihf")
         .join(profile_dir)
@@ -168,39 +192,79 @@ fn serialize_meta(crc32: u32, length: u32, fw_version: u32) -> [u8; META_SIZE] {
     m
 }
 
-/// Flatten an ELF's loadable segments into a contiguous raw binary, based at
-/// the lowest loadable virtual address. Gaps between segments are filled with
-/// 0xFF (erased-flash value) so the image matches what sits in flash.
+/// Extract a raw flash binary from an ELF via `objcopy -O binary`.
+///
+/// objcopy walks PT_LOAD by load address, 0xFF-fills the gaps between sections,
+/// and emits exactly the bytes that belong in flash — the same image a debugger
+/// programs. We do NOT hand-roll ELF parsing: a previous `object`-crate version
+/// mis-computed segment offsets and emitted the ELF header itself as the "binary"
+/// (a 24968-byte file starting with `\x7fELF` instead of the vector table),
+/// which silently bricked every flash. objcopy is the canonical tool for this.
+///
+/// Picks the first available of `arm-none-eabi-objcopy` or `llvm-objcopy`.
 fn elf_to_bin(path: &Path) -> Result<Vec<u8>> {
-    let data = std::fs::read(path)?;
-    let file = object::File::parse(&*data)?;
+    let tool = objcopy_tool()?;
 
-    let mut segs: Vec<(u64, &[u8])> = Vec::new();
-    for seg in file.segments() {
-        // Only PT_LOAD segments carry flashable bytes; object yields those.
-        let bytes = seg.data()?;
-        if bytes.is_empty() {
-            continue;
+    // objcopy writes to a file, not stdout, so stage a temp path next to the ELF.
+    let out_path = path.with_extension("objcopy.bin");
+    let status = Command::new(&tool)
+        .args(["-O", "binary"])
+        .arg(path)
+        .arg(&out_path)
+        .status()
+        .with_context(|| format!("failed to launch {tool}"))?;
+    if !status.success() {
+        bail!("{tool} -O binary failed on {}", path.display());
+    }
+
+    let bytes = std::fs::read(&out_path)
+        .with_context(|| format!("reading objcopy output {}", out_path.display()))?;
+    let _ = std::fs::remove_file(&out_path); // best-effort cleanup
+
+    // Sanity-gate the result so a bad extraction can never slip through to flash
+    // again: the first word is the initial SP (must point into RAM, 0x2000_xxxx)
+    // and the second is the reset vector (must point into the app flash region,
+    // odd for Thumb). This is exactly the check that would have caught the
+    // ELF-as-bin bug immediately.
+    if bytes.len() < 8 {
+        bail!("objcopy image is only {} bytes — too small to be valid", bytes.len());
+    }
+    let sp = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let reset = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    if sp & 0xFFFF_0000 != 0x2000_0000 {
+        bail!(
+            "objcopy image bad vector table: initial SP {sp:#010x} is not in RAM \
+             (0x2000_xxxx) — extraction likely produced non-image bytes"
+        );
+    }
+    if reset & 0xFFF0_0000 != 0x0800_0000 || reset & 1 == 0 {
+        bail!(
+            "objcopy image bad vector table: reset vector {reset:#010x} is not an \
+             odd (Thumb) address in flash (0x08xx_xxxx)"
+        );
+    }
+
+    Ok(bytes)
+}
+
+/// Locate an objcopy on PATH: prefer the ARM GNU toolchain's, fall back to LLVM.
+fn objcopy_tool() -> Result<String> {
+    for tool in ["arm-none-eabi-objcopy", "llvm-objcopy"] {
+        let found = Command::new(tool)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if found {
+            return Ok(tool.to_string());
         }
-        segs.push((seg.address(), bytes));
     }
-    if segs.is_empty() {
-        bail!("no loadable segments in ELF");
-    }
-    segs.sort_by_key(|(addr, _)| *addr);
-
-    let base = segs.first().unwrap().0;
-    let end = segs
-        .iter()
-        .map(|(addr, b)| addr + b.len() as u64)
-        .max()
-        .unwrap();
-    let mut out = vec![0xFFu8; (end - base) as usize];
-    for (addr, bytes) in segs {
-        let off = (addr - base) as usize;
-        out[off..off + bytes.len()].copy_from_slice(bytes);
-    }
-    Ok(out)
+    bail!(
+        "no objcopy found on PATH (looked for arm-none-eabi-objcopy, llvm-objcopy). \
+         Install the ARM GNU toolchain or LLVM tools."
+    )
 }
 
 /// servo4257-rs crate root, resolved relative to this xtask package.

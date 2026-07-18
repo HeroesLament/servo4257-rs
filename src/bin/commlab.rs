@@ -29,8 +29,8 @@ use servo4257_rs::boards::ActiveBoard;
 use servo4257_rs::canopen::mgmt::{self, Iwdg};
 use servo4257_rs::canopen::od::{self, MgmtAction};
 use servo4257_rs::display::{self, FrameBuf, Ssd1306};
-use servo4257_rs::shared::{CommMode, Snapshot, PARAMS, TELEM};
-use servo4257_rs::motion::trig::sin_cos;
+use servo4257_rs::shared::{CommMode, Shape, Snapshot, PARAMS, TELEM};
+use servo4257_rs::motion::trig::{sin_cos, sin_u16};
 
 const NODE_ID: u16 = 1;
 const RX_COBID: u16 = 0x600 + NODE_ID; // master → node
@@ -54,12 +54,51 @@ fn theta_e(enc: u16, p: &Snapshot) -> u16 {
     }
 }
 
-/// (v_a, v_b) for a sinusoidal vector at electrical `angle`, magnitude `amp`.
+/// One phase's normalized waveform value in [-1, 1] at electrical `angle`, per
+/// the selected `Shape`. Sine is the baseline; the others trade smoothness for
+/// torque/headroom (see `Shape`). All are peak-normalized to ±1 so `amplitude`
+/// remains the true peak regardless of shape.
 #[inline]
-fn vector(angle: u16, amp: i16) -> (i16, i16) {
-    let (s, c) = sin_cos(angle);
+fn wave(angle: u16, shape: Shape) -> f32 {
+    let s = sin_u16(angle);
+    match shape {
+        Shape::Sine => s,
+        // Clip at ±sin(60°) then rescale so the clipped level maps back to ±1.
+        // Flat-topped ("trapezoidal") drive: more fundamental per peak volt.
+        Shape::Trapezoid => {
+            const CLIP: f32 = 0.866_025_4; // sin(60°)
+            let c = if s > CLIP { CLIP } else if s < -CLIP { -CLIP } else { s };
+            c * (1.0 / CLIP)
+        }
+        // Third-harmonic injection: sin(θ) + (1/6)sin(3θ), then renormalize by
+        // the resulting peak (~1.1547) so it still peaks at ±1. Flattens the
+        // phase tops → ~15% more fundamental before the rail, without clipping.
+        Shape::ThirdHarmonic => {
+            let s3 = sin_u16(angle.wrapping_mul(3));
+            (s + s3 * (1.0 / 6.0)) * 0.866_025_4
+        }
+    }
+}
+
+/// (v_a, v_b) for a vector at electrical `angle`, magnitude `amp`, waveform
+/// `shape`. For `Shape::Sine` this is byte-for-byte the original proven drive:
+/// `(amp*cos, amp*sin)` straight from the sin/cos LUT. Non-sine shapes reshape
+/// each phase via `wave`, using the same cos=sin(θ+90°) quadrature.
+#[inline]
+fn vector(angle: u16, amp: i16, shape: Shape) -> (i16, i16) {
     let amp = amp as f32;
-    ((amp * c) as i16, (amp * s) as i16)
+    match shape {
+        Shape::Sine => {
+            let (s, c) = sin_cos(angle);
+            ((amp * c) as i16, (amp * s) as i16)
+        }
+        _ => {
+            // Phase A carries cos(θ) = sin(θ+90°); phase B carries sin(θ).
+            let a = wave(angle.wrapping_add(16384), shape);
+            let b = wave(angle, shape);
+            ((amp * a) as i16, (amp * b) as i16)
+        }
+    }
 }
 
 #[entry]
@@ -85,6 +124,28 @@ fn main() -> ! {
 
     let mut tick: u32 = 0;
     let mut last_enc: u16 = 0;
+
+    // ---- sensored startup state machine ----
+    // A synchronous motor can't reliably start from a fixed quadrature field:
+    // whether it accelerates or snaps to a stable lock depends on the rotor's
+    // exact position at enable. Real drives ALIGN first (DC-inject a known angle
+    // so the rotor seats deterministically), THEN commutate from that known
+    // position so the +90° torque angle always lands on the driving side. This
+    // handoff MUST be atomic in the control loop — doing it over CAN with sleeps
+    // races the rotor and stays a coin-flip (confirmed on hardware). Here it is
+    // in-loop: on the enable edge in Sensored mode we hold Align for
+    // `ALIGN_TICKS`, then switch to running quadrature commutation.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Startup { Idle, Aligning(u32), Running }
+    let mut startup = Startup::Idle;
+    let mut prev_enable = false;
+    // Loop runs in the tens of kHz; ~40k ticks ≈ a solid fraction of a second of
+    // align dwell, plenty for the rotor to seat and stop ringing.
+    const ALIGN_TICKS: u32 = 40_000;
+    // Electrical angle to DC-inject during align (rotor seats here). The RUN
+    // phase then commutes from the live encoder, so this only sets the start
+    // detent — 0 is fine.
+    const ALIGN_ANGLE: u16 = 0;
 
     loop {
         // Always kick the watchdog first — a hang anywhere below self-heals.
@@ -115,19 +176,61 @@ fn main() -> ! {
         let enc = board.rotor_angle();
         let th = theta_e(enc, &p);
 
+        // Sensored startup edge: on the rising edge of `enable` (in Sensored
+        // mode) begin the align dwell; on disable, reset so the next enable
+        // re-aligns. Other modes don't use `startup`.
+        if p.enable && !prev_enable && p.mode == CommMode::Sensored {
+            startup = Startup::Aligning(ALIGN_TICKS);
+        }
+        if !p.enable {
+            startup = Startup::Idle;
+        }
+        prev_enable = p.enable;
+
         if p.enable {
             match p.mode {
                 CommMode::Sensored => {
-                    let (va, vb) = vector(th.wrapping_add(p.lead_angle), p.amplitude);
-                    board.apply_coil_voltages(va, vb);
+                    const QUARTER: u16 = 16384; // 90° electrical
+                    let torque = p.amplitude.unsigned_abs() as i16;
+
+                    match startup {
+                        // ALIGN: DC-inject a fixed electrical angle so the rotor
+                        // seats to a known detent before we commutate. Field is a
+                        // fixed vector (not encoder-derived) — this is what makes
+                        // the subsequent quadrature start deterministic.
+                        Startup::Aligning(0) => startup = Startup::Running,
+                        Startup::Aligning(n) => {
+                            let (va, vb) = vector(ALIGN_ANGLE, torque, p.shape);
+                            board.apply_coil_voltages(va, vb);
+                            startup = Startup::Aligning(n - 1);
+                        }
+                        // RUN: quadrature torque drive ("what FANUC does") — field
+                        // held a fixed 90° AHEAD of the measured rotor angle, in
+                        // the torque direction. Self-commutating, spins
+                        // continuously; no stable field position to lock into.
+                        // `amplitude` sign = direction, magnitude = torque;
+                        // `lead_angle` is a fine trim around quadrature.
+                        Startup::Running => {
+                            let quad = if p.amplitude >= 0 {
+                                QUARTER.wrapping_add(p.lead_angle)
+                            } else {
+                                QUARTER.wrapping_neg().wrapping_add(p.lead_angle)
+                            };
+                            let (va, vb) = vector(th.wrapping_add(quad), torque, p.shape);
+                            board.apply_coil_voltages(va, vb);
+                        }
+                        // Idle shouldn't occur while enabled (edge sets Aligning),
+                        // but hold safe if it does.
+                        Startup::Idle => board.apply_coil_voltages(0, 0),
+                    }
                 }
                 CommMode::OpenLoop => {
-                    let (va, vb) = vector(p.ol_angle, p.amplitude);
+                    let (va, vb) = vector(p.ol_angle, p.amplitude, p.shape);
                     board.apply_coil_voltages(va, vb);
                     PARAMS.advance_ol_angle();
                 }
                 CommMode::Align => {
-                    let (va, vb) = vector(p.ol_angle, p.amplitude);
+                    let (va, vb) = vector(p.ol_angle, p.amplitude, p.shape);
                     board.apply_coil_voltages(va, vb);
                 }
                 CommMode::Idle => board.apply_coil_voltages(0, 0),

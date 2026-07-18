@@ -19,7 +19,7 @@ use n32l4xx_hal::gpio::{Alternate, OpenDrain, Output, PushPull,
     gpioa::{PA6, PA7}, gpiob::{PB0, PB1, PB6, PB7, PB8, PB9}};
 use n32l4xx_hal::i2c::I2c;
 use n32l4xx_hal::spi::{Spi, Mode, Phase, Polarity};
-use n32l4xx_hal::adc::{Adc, config::{AdcConfig, InjectedSequence, InjectedTrigger, SampleTime, TriggerMode}};
+use n32l4xx_hal::adc::{Adc, config::{AdcConfig, InjectedSequence, InjectedTrigger, SampleTime, Scan, TriggerMode}};
 use n32l4xx_hal::pwm::{C1, C2, C3, C4, ComplementaryImpossible};
 use n32l4xx_hal::can::Can as HalCan;
 use bxcan::{filter::Mask32, Fifo, Frame as BxFrame, Id, StandardId};
@@ -125,7 +125,12 @@ impl Servo57D {
         let cur_a = gpioa.pa2.into_analog();
         let cur_b = gpioa.pa1.into_analog();
 
-        let mut adc = Adc::adc(dp.adc, true, AdcConfig::default());
+        // Scan mode is REQUIRED to convert more than the first injected slot:
+        // without it the injected group stops after slot One, so coil B (slot
+        // Two) never converts and JDAT2 reads a stale 0 forever. Verified on
+        // silicon via SWD: CTRL1.SCANMD=0 -> JDAT1=live(coil A), JDAT2=0 always.
+        // (N32L406 UM/SVD: ADC_CTRL1.SCANMD bit 8; ADC base 0x40020800.)
+        let mut adc = Adc::adc(dp.adc, true, AdcConfig::default().scan(Scan::Enabled));
         adc.calibrate();
         // Injected sequence: slot One = coil A (PA2), slot Two = coil B (PA1).
         adc.configure_injected_channel(&cur_a, InjectedSequence::One, SampleTime::Cycles_7p5);
@@ -238,6 +243,36 @@ impl Servo57D {
             self.adc.injected_sample(InjectedSequence::Three),
             self.adc.injected_sample(InjectedSequence::Four),
         ]
+    }
+
+    /// FANUC-style current sample: fire the INJECTED group in SOFTWARE at a
+    /// caller-chosen instant (not locked to the TIM3-CC4 / coil-B duty edge), so
+    /// the sample point is deterministic and decoupled from the PWM duty. The
+    /// control loop calls this at a fixed phase each tick → both coil currents
+    /// are sampled coherently at the same, duty-independent instant. Returns
+    /// `(iA, iB)` from JDAT slots One/Two. Blocking (~1 µs at these sample times).
+    ///
+    /// Requires EXTJSEL = software (SWSTRJCH); set once via `use_sw_current_trigger`.
+    /// This is the fix for "field rotates but sampled current is static" — the
+    /// old CC4-locked trigger sampled at a fixed point in the switching cycle,
+    /// so a rotating current read as a constant.
+    pub fn sample_currents_now(&mut self) -> (i16, i16) {
+        let a = unsafe { &*pac::Adc::ptr() };
+        // clear injected end-of-conversion, fire the injected group in software
+        a.sts().modify(|_, w| w.jendc().clear_bit());
+        a.ctrl2().modify(|_, w| w.swstrjch().set_bit());
+        while !a.sts().read().jendc().bit_is_set() {}
+        (
+            self.adc.injected_sample(InjectedSequence::One),
+            self.adc.injected_sample(InjectedSequence::Two),
+        )
+    }
+
+    /// Switch the injected group's trigger to software control (EXTJSEL=SWSTRJCH)
+    /// so `sample_currents_now` owns the sample instant. Call once after init.
+    pub fn use_sw_current_trigger(&mut self) {
+        let a = unsafe { &*pac::Adc::ptr() };
+        a.ctrl2().modify(|_, w| w.extjsel().swstrjch().extjtrig().set_bit());
     }
 
     /// Diagnostic: software-triggered REGULAR conversion of an arbitrary ADC

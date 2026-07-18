@@ -12,6 +12,6 @@ pub mod setpoints;
 pub mod telemetry;
 // pub mod events;   // Signals (SYNC / FAULT / CONFIG_CHANGED) — pending embassy-sync
 
-pub use params::{CommMode, CommParams, Snapshot, PARAMS};
+pub use params::{CommMode, CommParams, Shape, Snapshot, PARAMS};
 pub use setpoints::{Mode, Setpoints, SETPOINTS};
 pub use telemetry::{SeqLock, Telem, TELEM};

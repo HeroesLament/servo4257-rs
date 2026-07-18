@@ -42,6 +42,32 @@ impl CommMode {
     }
 }
 
+/// Field waveform shape, selected via `0x2000:0A`. Shapes the electrical vector
+/// applied per angle — the sweep's waveform axis. All are normalized so peak
+/// amplitude equals `amplitude`; they differ in harmonic content / torque ripple.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Shape {
+    /// Pure sine/cos — smoothest, baseline (lowest torque ripple).
+    Sine = 0,
+    /// Trapezoidal (clipped sine) — more fundamental torque per amp, rougher.
+    Trapezoid = 1,
+    /// Third-harmonic-injected sine — ~15% more usable amplitude before the rail
+    /// (flat-tops the phase peaks without clipping the fundamental).
+    ThirdHarmonic = 2,
+}
+
+impl Shape {
+    #[inline]
+    pub fn from_u8(v: u8) -> Shape {
+        match v {
+            1 => Shape::Trapezoid,
+            2 => Shape::ThirdHarmonic,
+            _ => Shape::Sine,
+        }
+    }
+}
+
 /// Live commutation knobs. Each field is an independent atomic (mapped 1:1 to a
 /// manufacturer OD sub-index). Writers: the SDO server. Reader: the comm ISR.
 pub struct CommParams {
@@ -63,6 +89,8 @@ pub struct CommParams {
     pub ol_angle: AtomicU16,
     /// `0x2000:09` — open-loop auto-advance per tick (signed; 0 = hold).
     pub ol_rate: AtomicI16,
+    /// `0x2000:0A` — field waveform `Shape` (0=sine, 1=trapezoid, 2=3rd-harmonic).
+    pub shape: AtomicU8,
 }
 
 /// A coherent-enough single-read snapshot for one ISR tick.
@@ -77,6 +105,7 @@ pub struct Snapshot {
     pub pole_pairs: u16,
     pub ol_angle: u16,
     pub ol_rate: i16,
+    pub shape: Shape,
 }
 
 impl CommParams {
@@ -92,6 +121,7 @@ impl CommParams {
             pole_pairs: AtomicU16::new(50),
             ol_angle: AtomicU16::new(0),
             ol_rate: AtomicI16::new(0),
+            shape: AtomicU8::new(Shape::Sine as u8),
         }
     }
 
@@ -108,6 +138,7 @@ impl CommParams {
             pole_pairs: self.pole_pairs.load(RLX),
             ol_angle: self.ol_angle.load(RLX),
             ol_rate: self.ol_rate.load(RLX),
+            shape: Shape::from_u8(self.shape.load(RLX)),
         }
     }
 

@@ -78,6 +78,7 @@ pub fn read(index: u16, sub: u8) -> Result<(u32, u8), OdErr> {
         (idx::PARAMS, 0x07) => Ok((PARAMS.pole_pairs.load(RLX) as u32, 2)),
         (idx::PARAMS, 0x08) => Ok((PARAMS.ol_angle.load(RLX) as u32, 2)),
         (idx::PARAMS, 0x09) => Ok((PARAMS.ol_rate.load(RLX) as u16 as u32, 2)),
+        (idx::PARAMS, 0x0A) => Ok((PARAMS.shape.load(RLX) as u32, 1)),
 
         // ---- 0x2001: telemetry (one coherent seqlock snapshot) ----
         (idx::TELEMETRY, sub) if (0x01..=0x06).contains(&sub) => {
@@ -124,6 +125,7 @@ pub fn write(index: u16, sub: u8, val: u32) -> Result<Option<MgmtAction>, OdErr>
         (idx::PARAMS, 0x07) => store(|| PARAMS.pole_pairs.store(val as u16, RLX)),
         (idx::PARAMS, 0x08) => store(|| PARAMS.ol_angle.store(val as u16, RLX)),
         (idx::PARAMS, 0x09) => store(|| PARAMS.ol_rate.store(val as i16, RLX)),
+        (idx::PARAMS, 0x0A) => store(|| PARAMS.shape.store(val as u8, RLX)),
 
         // ---- 0x2001: telemetry is read-only ----
         (idx::TELEMETRY, sub) if (0x01..=0x06).contains(&sub) => Err(OdErr::ReadOnly),

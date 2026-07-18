@@ -22,7 +22,10 @@ use servo4257_rs::motion::encoder::{offset_from_alignment, POLE_PAIRS};
 use servo4257_rs::motion::trig::sin_cos;
 
 /// Applied vector amplitude. Terminal speed scales with this; supply limit caps it.
-const AMP: i16 = 3000;
+/// Raised from 3000: with the split_duty scaling (mag = |v|·max_duty/i16::MAX),
+/// 3000 is only ~9% duty — not enough torque to break static friction/detent, so
+/// the rotor just holds the align point. 12000 (~37% duty) develops real torque.
+const AMP: i16 = 12000;
 /// Field lead angle. Empirically, LEAD=16384 (90°) landed the field ON the
 /// rotor → a stable servo hold (field−rotor=0), so the alignment reference sits
 /// a quarter-cycle off. Shift another 90° → LEAD=32768 gives true quadrature
