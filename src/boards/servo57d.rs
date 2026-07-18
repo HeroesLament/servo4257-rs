@@ -205,6 +205,46 @@ impl Servo57D {
         self.max_duty
     }
 
+    /// Diagnostic: read ALL FOUR injected ADC data registers (JDAT1..4). The
+    /// injected sequence on this part is right-aligned, so a phase's conversion
+    /// result may not land in the JDATx we expect. Coil B read a hard 0 on slot
+    /// Two despite an identical vREF-biased sense amp (should idle ~2043); this
+    /// dumps every slot to find where coil B's result actually lands.
+    pub fn read_injected_all(&self) -> [i16; 4] {
+        [
+            self.adc.injected_sample(InjectedSequence::One),
+            self.adc.injected_sample(InjectedSequence::Two),
+            self.adc.injected_sample(InjectedSequence::Three),
+            self.adc.injected_sample(InjectedSequence::Four),
+        ]
+    }
+
+    /// Diagnostic: software-triggered REGULAR conversion of an arbitrary ADC
+    /// channel, on demand — bypasses the injected group and its CC4/b_minus
+    /// trigger entirely, so it works even when b_minus is idle. Blocking (~1 µs).
+    /// Channel map on this board: 3 = currentA (PA2), 2 = currentB (PA1),
+    /// 4 = vBus (PA3). Returns the 12-bit sample (0..4095).
+    pub fn read_channel_now(&mut self, ch: u8) -> u16 {
+        let a = unsafe { &*pac::Adc::ptr() };
+        // Put the REGULAR path into a clean single-shot mode (mirrors HAL
+        // convert()): no DMA, no continuous, no external trigger, no scan.
+        a.ctrl2()
+            .modify(|_, w| w.endma().clear_bit().ctu().clear_bit().extrtrig().clear_bit());
+        a.ctrl1().modify(|_, w| w.scanmd().clear_bit());
+        // single regular conversion of `ch`, long sample time
+        a.rseq1().modify(|_, w| unsafe { w.len().bits(0) });
+        a.rseq3().modify(|_, w| unsafe { w.seq1().bits(ch) });
+        if ch <= 9 {
+            let sh = 3 * (ch as u32);
+            a.smpr2()
+                .modify(|r, w| unsafe { w.bits((r.bits() & !(0b111 << sh)) | (0b111 << sh)) });
+        }
+        a.sts().modify(|_, w| w.endca().clear_bit().endc().clear_bit());
+        a.ctrl2().modify(|_, w| w.swstrrch().set_bit());
+        while !a.sts().read().endc().bit_is_set() {}
+        a.dat().read().dat().bits()
+    }
+
     /// Best-effort CAN transmit for telemetry / diagnostics: non-blocking, drops
     /// the frame if all TX mailboxes are busy (telemetry is lossy by design).
     /// `id` is an 11-bit standard COB-ID; `data` is 0..=8 bytes.

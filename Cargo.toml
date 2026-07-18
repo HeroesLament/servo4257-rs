@@ -140,5 +140,17 @@ name = "instr"
 required-features = ["board-57d", "layout-app"]
 
 [[bin]]
+name = "focadj"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "adcdump"
+required-features = ["board-57d", "layout-app"]
+
+[[bin]]
+name = "ramfoc"
+required-features = ["board-57d"]
+
+[[bin]]
 name = "appstub"
 required-features = ["board-57d", "layout-app"]
