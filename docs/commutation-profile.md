@@ -35,9 +35,20 @@ so per-field atomics (no seqlock).
 | 07  | `pole_pairs` | u16  | live-tunable; nominal 50 for this motor |
 | 08  | `ol_angle`   | u16  | commanded open-loop field angle (mode 2/3) |
 | 09  | `ol_rate`    | i16  | open-loop auto-advance per tick (0 = hold) |
+| 0A  | `shape`      | u8   | field waveform: 0 sine · 1 trapezoid · 2 3rd-harmonic |
 
 Field angle in sensored mode: `theta_e = enc·pole_pairs ∓ offset`
 (sign per `direction`), then `+ lead_angle`.
+
+> **Verified commutation (hardware).** The law that produces clean sustained
+> rotation on this motor is: negate the encoder direction and lead by a full
+> quadrature — `theta = (−enc)·pole_pairs; field = theta + 16384` (+90°
+> electrical). Equivalent OD settings: `direction` giving the negated sign,
+> `lead_angle = 16384`, `pole_pairs = 50`. Getting the direction/lead sign
+> wrong makes the field librate or lock instead of turning. See
+> `commutation-bringup-log.md` for how this was found, and `nano-stepper-port.md`
+> for the Mechaduino/nano_stepper control lineage. Remaining work is reliable
+> spin-up from standstill (open-loop start → closed-loop handoff).
 
 ## 0x2001 — Telemetry (RO)
 

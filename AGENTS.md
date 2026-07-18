@@ -64,7 +64,10 @@ Dependency direction is strictly downward and must never invert:
   n32g4-family API shape `Sclksw`/`SclkswR`/`Rcc` the HAL targets; 0.31.x's
   legacy `SCLKSW_A`/`RCC` shape does not resolve against the HAL)
 - `form` 0.13.0, `svdtools` 0.1.27 (CLI is `svd`, not `svdtools`)
-- `probe-rs` NOT yet installed (needed to flash; SWD header J5 is broken out)
+- `probe-rs` for the initial SWD flash of the bootloader (SWD header J5 is
+  broken out). Once the bootloader is resident, app updates go over CAN (no SWD)
+  — see `docs/over-can-dev-loop.md`. Use `arm-none-eabi-objcopy` (or
+  `llvm-objcopy`) for ELF→bin; `cargo xtask dist` shells out to it.
 - zsh autocorrect bites unknown commands: `unsetopt correct correct_all` in
   fresh shells before installs.
 
@@ -151,6 +154,10 @@ exclusive PAC device features can't co-compile). Board deltas live ONLY in
   silently-wrong inherited maps were fixed against the UM/Datasheet along the
   way. See `n32l4xx-hal/PORT_STATUS.md` and `docs/HAL_INTERFACE.md`.
 - **Toolchain: nightly-2026-06-07**, pinned in this repo and the PAC.
-- This firmware repo itself is still scaffolding only — module stubs, no real
-  logic yet. `src/motion/` (pure math) can be started in parallel with the HAL
-  port since it has no hardware/PAC deps.
+- **Firmware bring-up is underway and the core loop runs on silicon.** The
+  `Board` impl, hot path, sin/cos LUT, and per-board binaries are implemented
+  and build. The board flashes entirely over CAN via a CANopen bootloader with
+  a CRC gate (`docs/over-can-dev-loop.md`), and the motor spins under closed-loop
+  sensored commutation (`docs/commutation-bringup-log.md`,
+  `docs/commutation-profile.md`). In progress: reliable spin-up from standstill,
+  the cascaded current/velocity/position loops, and the CiA 402 ip/csp app.

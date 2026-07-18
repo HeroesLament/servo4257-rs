@@ -1,13 +1,25 @@
 # Porting nano_stepper's Simple PID servo to SERVO57D
 
 Source: Misfittech/nano_stepper (Mechaduino lineage) — the reference firmware
-the MKS Servo boards descend from. Cloned to ~/src/nano_stepper. This is the
-DEFAULT "works out of the box" servo mode, encoder-only, NO current sensing.
-It's the mode we should have built first.
+the MKS Servo boards descend from. This is its DEFAULT "works out of the box"
+servo mode: encoder-only, no current sensing, current set by the applied-vector
+amplitude.
 
-## Why our attempts locked/hunted
+> **Update / correction.** This doc predates the commutation fix. It attributes
+> the early lock/hunt to missing encoder calibration; the *actual* root cause was
+> a wrong commutation-phase sign (see `commutation-bringup-log.md`) — the motor
+> spins cleanly with raw `enc·pole_pairs` once the encoder direction and lead
+> sign are right, no calibration table required. The material below is still the
+> correct reference for the nano_stepper simple-PID *servo* algorithm (position
+> control, current from error), which is the intended next layer on top of the
+> now-working commutation. Encoder calibration remains worthwhile for smoothness,
+> not as a prerequisite for rotation.
 
-We drove a FIXED-lead voltage vector from raw `enc·pole_pairs`. Two fatal gaps:
+## The lock/hunt failure mode (original analysis, partly superseded)
+
+Early attempts drove a FIXED-lead voltage vector from raw `enc·pole_pairs`. Two
+contributing factors were identified — the second (lead/direction sign) turned
+out to be the real one:
 
 1. **No encoder calibration.** nano_stepper ALWAYS reads position through a
    200-point calibration table: `y = calTable.fastReverseLookup(sampleAngle())`.
